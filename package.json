@@ -1,0 +1,23 @@
+{
+  "name": "paypal-ai-hackathon-2026",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Starter for a PayPal AI Hackathon 2026 entry (work in progress)",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/server.js",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "prepublish-check": "node scripts/prepublish-check.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.12"
+  }
+}

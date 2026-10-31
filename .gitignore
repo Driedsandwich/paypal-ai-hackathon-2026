@@ -1,0 +1,14 @@
+node_modules/
+dist/
+coverage/
+
+# Local secrets: never commit
+.env
+.env.*
+!.env.example
+
+# Local-only extra patterns for scripts/prepublish-check.mjs (one regex per line)
+.prepublish-local-patterns
+
+.DS_Store
+*.log
