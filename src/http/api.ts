@@ -5,6 +5,7 @@ import { BuyerSchema, EvidenceInputSchema, JpItemSchema, ListingForSaleSchema, S
 import { Agent } from "../agent/tasks.js";
 import { chat, ChatInputSchema, invoiceBrief } from "../agent/tools.js";
 import type { AppSettings } from "../config.js";
+import type { DemoBuyers } from "../demo/buyers.js";
 import { DEMO_ITEMS } from "../demo/items.js";
 import type { EventCategory, EventLog } from "../events/log.js";
 import type { AiLimiter } from "../limits/rate-limit.js";
@@ -15,8 +16,11 @@ import type { PayPalConfig } from "../paypal/config.js";
 import type { Invoice } from "../paypal/types.js";
 import type { SeedDemoDataPayload } from "../proposals/actions.js";
 import { buildInvoicePayload, buildOrderPayload } from "../agent/tasks.js";
-import { PROPOSAL_STATUSES, type ProposalStatus, type ProposalStore } from "../proposals/store.js";
+import type { OrderRegistry } from "../proposals/order-registry.js";
+import { PROPOSAL_STATUSES, type Proposal, type ProposalKind, type ProposalStatus, type ProposalStore } from "../proposals/store.js";
 import { clientAddress, limitKey } from "./client-address.js";
+import { publicProposal } from "./dto.js";
+import { ensureSession, isSecureRequest } from "./session.js";
 import { HttpError, ok, readJsonBody } from "./util.js";
 
 export interface ApiDeps {
@@ -28,13 +32,47 @@ export interface ApiDeps {
   events: EventLog;
   proposals: ProposalStore;
   limiter: AiLimiter;
+  /** Allowed recipients by alias (DEMO_BUYER_EMAILS). */
+  buyers: DemoBuyers;
+  /** Orders v2 ids created by this server, with the session that created them. */
+  orders: OrderRegistry;
 }
+
+/** Shown in the UI header: what a visitor can and cannot do on the public demo. */
+export const DEMO_NOTICE = "Demo mode: you act as the seller of a shared PayPal sandbox account.";
 
 const MAX_API_BODY = 64 * 1024;
 const UNPAID = new Set(["SENT", "UNPAID", "PARTIALLY_PAID"]);
 const ID = z.string().trim().min(1).max(255).regex(/^[A-Za-z0-9_-]+$/, "letters, digits, - and _ only");
 
-type Handler = (ctx: { req: IncomingMessage; res: ServerResponse; params: string[]; query: URLSearchParams; deps: ApiDeps }) => Promise<void>;
+interface Ctx {
+  req: IncomingMessage;
+  res: ServerResponse;
+  params: string[];
+  query: URLSearchParams;
+  deps: ApiDeps;
+  /** Demo session of the caller (cookie). */
+  session: string;
+  /** Client address (see TRUST_PROXY_HOPS). */
+  address: string;
+}
+
+type Handler = (ctx: Ctx) => Promise<void>;
+
+/** Creates a proposal owned by the caller's session. */
+function propose<P>(ctx: Ctx, kind: ProposalKind, title: string, payload: P): Proposal<P> {
+  return ctx.deps.proposals.propose(kind, title, payload, { owner: ctx.session });
+}
+
+/** Resolves a buyer alias, or explains which aliases exist. */
+function requireBuyer(deps: ApiDeps, alias: string | undefined): string {
+  if (deps.buyers.size === 0) {
+    throw new HttpError(409, "no_demo_buyers", "No demo buyers are configured. Set DEMO_BUYER_EMAILS (sandbox personal account emails, comma-separated) to send invoices or payment links.");
+  }
+  const buyer = alias ? deps.buyers.resolve(alias) : undefined;
+  if (!buyer) throw new HttpError(400, "unknown_buyer", `Choose one of the demo buyers: ${deps.buyers.aliases.join(", ")}`, { buyers: deps.buyers.aliases });
+  return buyer.alias;
+}
 
 interface Route {
   method: "GET" | "POST";
@@ -73,7 +111,7 @@ export function healthData(deps: ApiDeps) {
       maxOutputTokens: deps.settings.aiMaxOutputTokens,
       usedToday: deps.limiter.usage().usedToday,
     },
-    demo: { buyerEmailsConfigured: deps.settings.demoBuyerEmails.length },
+    demo: { notice: DEMO_NOTICE, buyerEmailsConfigured: deps.buyers.size, buyers: deps.buyers.publicList() },
     agStudio: { licensed: deps.settings.agStudioLicensed },
     banner: bannerMessages(deps),
   };
@@ -145,28 +183,31 @@ const ROUTES: Route[] = [
     method: "POST",
     pattern: /^\/api\/invoices\/prepare$/,
     ai: true,
-    handler: async ({ req, res, deps }) => {
+    handler: async (ctx) => {
+      const { req, res, deps } = ctx;
       const body = PrepareSchema.parse(await readJsonBody(req, MAX_API_BODY));
+      const alias = requireBuyer(deps, body.buyer?.alias);
       if (deps.settings.paymentPath === "order") {
-        const prepared = await deps.agent.preparePaymentLink(body.listing);
-        const proposal = deps.proposals.propose("create_payment_link", `Create payment link for ${showMoney(body.listing.price)}: ${body.listing.title}`, prepared.payload);
-        return ok(res, { path: "order", proposal, buyer_message: prepared.buyer_message, generated_by: prepared.generated_by });
+        const prepared = await deps.agent.preparePaymentLink(body.listing, { alias });
+        const proposal = propose(ctx, "create_payment_link", `Create payment link for ${showMoney(body.listing.price)} for ${alias}: ${body.listing.title}`, prepared.payload);
+        return ok(res, { path: "order", proposal: publicProposal(proposal), buyer_message: prepared.buyer_message, generated_by: prepared.generated_by });
       }
-      if (!body.buyer) throw new HttpError(400, "invalid_input", "buyer.email is required on the invoice path");
-      const prepared = await deps.agent.prepareInvoice(body.listing, body.buyer);
-      const proposal = deps.proposals.propose("create_and_send_invoice", `Send invoice for ${showMoney(body.listing.price)}: ${body.listing.title}`, prepared.payload);
-      ok(res, { path: "invoice", proposal, buyer_message: prepared.buyer_message, generated_by: prepared.generated_by });
+      const prepared = await deps.agent.prepareInvoice(body.listing, { alias });
+      const proposal = propose(ctx, "create_and_send_invoice", `Send invoice for ${showMoney(body.listing.price)} to ${alias}: ${body.listing.title}`, prepared.payload);
+      ok(res, { path: "invoice", proposal: publicProposal(proposal), buyer_message: prepared.buyer_message, generated_by: prepared.generated_by });
     },
   },
   {
     method: "POST",
     pattern: /^\/api\/payment-links\/prepare$/,
     ai: true,
-    handler: async ({ req, res, deps }) => {
+    handler: async (ctx) => {
+      const { req, res, deps } = ctx;
       const body = PrepareSchema.parse(await readJsonBody(req, MAX_API_BODY));
-      const prepared = await deps.agent.preparePaymentLink(body.listing);
-      const proposal = deps.proposals.propose("create_payment_link", `Create payment link for ${showMoney(body.listing.price)}: ${body.listing.title}`, prepared.payload);
-      ok(res, { path: "order", proposal, buyer_message: prepared.buyer_message, generated_by: prepared.generated_by });
+      const alias = requireBuyer(deps, body.buyer?.alias);
+      const prepared = await deps.agent.preparePaymentLink(body.listing, { alias });
+      const proposal = propose(ctx, "create_payment_link", `Create payment link for ${showMoney(body.listing.price)} for ${alias}: ${body.listing.title}`, prepared.payload);
+      ok(res, { path: "order", proposal: publicProposal(proposal), buyer_message: prepared.buyer_message, generated_by: prepared.generated_by });
     },
   },
   {
@@ -182,7 +223,8 @@ const ROUTES: Route[] = [
     method: "POST",
     pattern: /^\/api\/invoices\/nudge$/,
     ai: true,
-    handler: async ({ req, res, deps }) => {
+    handler: async (ctx) => {
+      const { req, res, deps } = ctx;
       const body = z.object({ invoice_ids: z.array(ID).max(20).optional() }).parse(await readJsonBody(req, MAX_API_BODY));
       const list = await requirePayPal(deps).listInvoices({ page: 1, page_size: 50 });
       const wanted = body.invoice_ids ? new Set(body.invoice_ids) : undefined;
@@ -200,8 +242,8 @@ const ROUTES: Route[] = [
           item_names: (inv.items ?? []).map((i) => i.name).slice(0, 20),
         }));
       const { reminders, generated_by } = await deps.agent.nudgeUnpaid(unpaid);
-      const proposals = reminders.map((r) => deps.proposals.propose("send_invoice_reminder", `Send reminder for invoice ${r.invoice_id}`, r.payload));
-      ok(res, { unpaid_count: unpaid.length, proposals, generated_by });
+      const proposals = reminders.map((r) => propose(ctx, "send_invoice_reminder", `Send reminder for invoice ${r.invoice_id}`, r.payload));
+      ok(res, { unpaid_count: unpaid.length, proposals: proposals.map(publicProposal), generated_by });
     },
   },
   {
@@ -224,24 +266,33 @@ const ROUTES: Route[] = [
   {
     method: "POST",
     pattern: /^\/api\/orders\/([A-Za-z0-9_-]+)\/capture$/,
-    handler: async ({ req, res, deps, params }) => {
+    handler: async (ctx) => {
+      const { req, res, deps, params } = ctx;
       await readJsonBody(req, MAX_API_BODY);
       requirePayPal(deps);
-      ok(res, { proposal: deps.proposals.propose("capture_order", `Capture payment for order ${params[0]}`, { orderId: params[0]! }) }, 201);
+      const orderId = params[0]!;
+      const known = deps.orders.get(orderId);
+      if (!known || known.owner !== ctx.session) {
+        throw new HttpError(404, "order_not_found", "Only payment links created in your demo session can be captured here.");
+      }
+      const proposal = propose(ctx, "capture_order", `Capture payment for order ${orderId}`, { orderId });
+      known.captureProposalId = proposal.id;
+      ok(res, { proposal: publicProposal(proposal) }, 201);
     },
   },
   {
     method: "POST",
     pattern: /^\/api\/tracking$/,
-    handler: async ({ req, res, deps }) => {
+    handler: async (ctx) => {
+      const { req, res, deps } = ctx;
       const body = TrackingSchema.parse(await readJsonBody(req, MAX_API_BODY));
       const paypal = requirePayPal(deps);
       if (body.kind === "order") {
-        const proposal = deps.proposals.propose("add_order_tracking", `Add ${body.carrier} tracking ${body.tracking_number} to order ${body.order_id}`, {
+        const proposal = propose(ctx, "add_order_tracking", `Add ${body.carrier} tracking ${body.tracking_number} to order ${body.order_id}`, {
           orderId: body.order_id,
           tracker: { capture_id: body.capture_id, tracking_number: body.tracking_number, ...carrierFor(body.carrier, "orders"), notify_payer: body.notify_buyer },
         });
-        return ok(res, { proposal }, 201);
+        return ok(res, { proposal: publicProposal(proposal) }, 201);
       }
       let transactionId = body.transaction_id;
       if (!transactionId && body.invoice_id) {
@@ -250,10 +301,10 @@ const ROUTES: Route[] = [
         if (!transactionId) throw new HttpError(409, "invoice_not_paid", "This invoice has no PayPal payment yet, so there is no transaction to attach tracking to.");
       }
       if (!transactionId) throw new HttpError(400, "invalid_input", "Give invoice_id or transaction_id");
-      const proposal = deps.proposals.propose("add_invoice_tracking", `Add ${body.carrier} tracking ${body.tracking_number} to transaction ${transactionId}`, {
+      const proposal = propose(ctx, "add_invoice_tracking", `Add ${body.carrier} tracking ${body.tracking_number} to transaction ${transactionId}`, {
         trackers: [{ transaction_id: transactionId, tracking_number: body.tracking_number, status: "SHIPPED", ...carrierFor(body.carrier, "shipping"), notify_buyer: body.notify_buyer }],
       });
-      ok(res, { proposal }, 201);
+      ok(res, { proposal: publicProposal(proposal) }, 201);
     },
   },
   {
@@ -284,7 +335,8 @@ const ROUTES: Route[] = [
     method: "POST",
     pattern: /^\/api\/disputes\/([A-Za-z0-9_-]+)\/evidence-pack$/,
     ai: true,
-    handler: async ({ req, res, deps, params }) => {
+    handler: async (ctx) => {
+      const { req, res, deps, params } = ctx;
       const body = EvidenceRequestSchema.parse(await readJsonBody(req, MAX_API_BODY));
       const paypal = requirePayPal(deps);
       const d = await paypal.getDispute(params[0]!);
@@ -320,8 +372,8 @@ const ROUTES: Route[] = [
       });
       const pack = await deps.agent.disputeEvidencePack(input);
       const proposals = {
-        provide_evidence: deps.proposals.propose("provide_dispute_evidence", `Provide evidence for dispute ${d.dispute_id}`, pack.evidence_payload),
-        send_message: deps.proposals.propose("send_dispute_message", `Send reply to buyer in dispute ${d.dispute_id}`, pack.message_payload),
+        provide_evidence: publicProposal(propose(ctx, "provide_dispute_evidence", `Provide evidence for dispute ${d.dispute_id}`, pack.evidence_payload)),
+        send_message: publicProposal(propose(ctx, "send_dispute_message", `Send reply to buyer in dispute ${d.dispute_id}`, pack.message_payload)),
       };
       ok(res, { pack, proposals });
     },
@@ -329,36 +381,37 @@ const ROUTES: Route[] = [
   {
     method: "POST",
     pattern: /^\/api\/disputes\/([A-Za-z0-9_-]+)\/accept-claim$/,
-    handler: async ({ req, res, deps, params }) => {
+    handler: async (ctx) => {
+      const { req, res, deps, params } = ctx;
       const body = z.object({ note: z.string().trim().min(1).max(2000) }).parse(await readJsonBody(req, MAX_API_BODY));
       requirePayPal(deps);
-      ok(res, { proposal: deps.proposals.propose("accept_dispute_claim", `Accept claim and refund the buyer in dispute ${params[0]}`, { disputeId: params[0]!, note: body.note }) }, 201);
+      ok(res, { proposal: publicProposal(propose(ctx, "accept_dispute_claim", `Accept claim and refund the buyer in dispute ${params[0]}`, { disputeId: params[0]!, note: body.note })) }, 201);
     },
   },
   {
     method: "GET",
     pattern: /^\/api\/proposals$/,
-    handler: async ({ res, deps, query }) => {
+    handler: async ({ res, deps, query, session }) => {
       const status = z.enum(PROPOSAL_STATUSES as [ProposalStatus, ...ProposalStatus[]]).optional().catch(undefined).parse(query.get("status") ?? undefined) as ProposalStatus | undefined;
-      ok(res, deps.proposals.list(status ? { status } : undefined));
+      ok(res, deps.proposals.list({ owner: session, ...(status ? { status } : {}) }).map(publicProposal));
     },
   },
   {
     method: "POST",
     pattern: /^\/api\/proposals\/([A-Za-z0-9_-]+)\/approve$/,
-    handler: async ({ req, res, deps, params }) => {
+    handler: async ({ req, res, deps, params, session }) => {
       await readJsonBody(req, MAX_API_BODY); // body ignored: the stored payload is what runs
-      if (deps.proposals.get(params[0]!)) requirePayPal(deps);
-      const p = await deps.proposals.approve(params[0]!);
-      ok(res, p);
+      if (deps.proposals.get(params[0]!, session)) requirePayPal(deps);
+      const p = await deps.proposals.approve(params[0]!, session);
+      ok(res, publicProposal(p));
     },
   },
   {
     method: "POST",
     pattern: /^\/api\/proposals\/([A-Za-z0-9_-]+)\/reject$/,
-    handler: async ({ req, res, deps, params }) => {
+    handler: async ({ req, res, deps, params, session }) => {
       await readJsonBody(req, MAX_API_BODY);
-      ok(res, deps.proposals.reject(params[0]!));
+      ok(res, publicProposal(deps.proposals.reject(params[0]!, session)));
     },
   },
   {
@@ -372,46 +425,47 @@ const ROUTES: Route[] = [
   {
     method: "POST",
     pattern: /^\/api\/demo\/seed$/,
-    handler: async ({ req, res, deps }) => {
+    handler: async (ctx) => {
+      const { req, res, deps } = ctx;
       await readJsonBody(req, MAX_API_BODY);
       requirePayPal(deps);
+      requireBuyer(deps, deps.buyers.aliases[0]);
       const s = deps.settings;
       const listings = DEMO_ITEMS.map((d) => ({ title: d.seed.title, description: d.seed.description, price: { currency_code: "USD", value: d.seed.price_usd }, quantity: 1 }));
       let payload: SeedDemoDataPayload;
       if (s.paymentPath === "invoice") {
-        if (s.demoBuyerEmails.length === 0) throw new HttpError(409, "no_demo_buyers", "Set DEMO_BUYER_EMAILS (sandbox personal account emails, comma-separated) to seed invoices.");
         payload = {
           invoices: listings.map((l, i) =>
-            buildInvoicePayload(l, { email: s.demoBuyerEmails[i % s.demoBuyerEmails.length]! }, { subject: `Invoice: ${l.title}`, note: `Demo invoice for "${l.title}". Pay securely with PayPal (sandbox).` }, s.sellerBusinessName),
+            buildInvoicePayload(l, deps.buyers.at(i).alias, { subject: `Invoice: ${l.title}`, note: `Demo invoice for "${l.title}". Pay securely with PayPal (sandbox).` }, s.sellerBusinessName),
           ),
         };
       } else {
-        payload = { orders: listings.map((l) => buildOrderPayload(l, { publicBaseUrl: s.publicBaseUrl, ...(s.sellerBusinessName ? { sellerBusinessName: s.sellerBusinessName } : {}) })) };
+        payload = { orders: listings.map((l, i) => buildOrderPayload(l, deps.buyers.at(i).alias, { publicBaseUrl: s.publicBaseUrl, ...(s.sellerBusinessName ? { sellerBusinessName: s.sellerBusinessName } : {}) })) };
       }
       const count = (payload.invoices ?? payload.orders ?? []).length;
-      ok(res, { proposal: deps.proposals.propose("seed_demo_data", `Seed ${count} sample ${s.paymentPath === "invoice" ? "invoices" : "payment links"} in the PayPal sandbox`, payload) }, 201);
+      ok(res, { proposal: publicProposal(propose(ctx, "seed_demo_data", `Seed ${count} sample ${s.paymentPath === "invoice" ? "invoices" : "payment links"} for the demo buyers in the PayPal sandbox`, payload)) }, 201);
     },
   },
   {
     method: "POST",
     pattern: /^\/api\/chat$/,
     ai: true,
-    handler: async ({ req, res, deps }) => {
+    handler: async ({ req, res, deps, session }) => {
       const body = ChatInputSchema.parse(await readJsonBody(req, MAX_API_BODY));
-      ok(
-        res,
-        await chat(
-          deps.ai,
-          {
-            paypal: deps.paypal,
-            proposals: deps.proposals,
-            agentConfig: { fxJpyPerUsd: deps.settings.fxJpyPerUsd, maxOutputTokens: deps.settings.aiMaxOutputTokens, publicBaseUrl: deps.settings.publicBaseUrl, ...(deps.settings.sellerBusinessName ? { sellerBusinessName: deps.settings.sellerBusinessName } : {}) },
-            paymentPath: deps.settings.paymentPath,
-          },
-          body.messages,
-          deps.settings.aiMaxOutputTokens,
-        ),
+      const result = await chat(
+        deps.ai,
+        {
+          paypal: deps.paypal,
+          proposals: deps.proposals,
+          agentConfig: { fxJpyPerUsd: deps.settings.fxJpyPerUsd, maxOutputTokens: deps.settings.aiMaxOutputTokens, publicBaseUrl: deps.settings.publicBaseUrl, ...(deps.settings.sellerBusinessName ? { sellerBusinessName: deps.settings.sellerBusinessName } : {}) },
+          paymentPath: deps.settings.paymentPath,
+          sessionId: session,
+          buyers: deps.buyers,
+        },
+        body.messages,
+        deps.settings.aiMaxOutputTokens,
       );
+      ok(res, { ...result, proposals: result.proposals.map(publicProposal) });
     },
   },
 ];
@@ -422,13 +476,15 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
   if (matching.length === 0) return false;
   const route = matching.find((r) => r.method === req.method);
   if (!route) throw new HttpError(405, "method_not_allowed", `Use ${matching.map((r) => r.method).join(" or ")}`, {}, { Allow: matching.map((r) => r.method).join(", ") });
+  const address = clientAddress(req, deps.settings.trustProxyHops);
+  const session = ensureSession(req, res, isSecureRequest(req, deps.settings.publicBaseUrl, deps.settings.trustProxyHops));
   if (route.ai) {
-    const verdict = deps.limiter.take(limitKey(clientAddress(req, deps.settings.trustProxyHops)));
+    const verdict = deps.limiter.take(limitKey(address));
     if (!verdict.ok) {
       throw new HttpError(429, verdict.reason === "per_ip" ? "rate_limited" : "daily_cap_reached", verdict.message, { retryAfterSeconds: verdict.retryAfterSeconds }, { "Retry-After": String(verdict.retryAfterSeconds) });
     }
   }
   const params = route.pattern.exec(url.pathname)!.slice(1);
-  await route.handler({ req, res, params, query: url.searchParams, deps });
+  await route.handler({ req, res, params, query: url.searchParams, deps, session, address });
   return true;
 }

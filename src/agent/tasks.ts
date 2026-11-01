@@ -141,7 +141,7 @@ export class Agent {
   /** Task 2 (invoice path): invoice draft + notification for seller approval. Nothing is sent here. */
   async prepareInvoice(listing: ListingForSale, buyer: Buyer): Promise<PreparedBilling<CreateAndSendInvoicePayload>> {
     const { value, provider, model } = await this.buyerMessage(listing);
-    const payload = buildInvoicePayload(listing, buyer, value, this.config.sellerBusinessName);
+    const payload = buildInvoicePayload(listing, buyer.alias, value, this.config.sellerBusinessName);
     return {
       payload,
       buyer_message: value,
@@ -150,9 +150,9 @@ export class Agent {
   }
 
   /** Task 2 (order path, spec 3.5): Orders v2 payment link for seller approval. */
-  async preparePaymentLink(listing: ListingForSale): Promise<PreparedBilling<CreatePaymentLinkPayload>> {
+  async preparePaymentLink(listing: ListingForSale, buyer: Buyer): Promise<PreparedBilling<CreatePaymentLinkPayload>> {
     const { value, provider, model } = await this.buyerMessage(listing);
-    const payload = buildOrderPayload(listing, this.config);
+    const payload = buildOrderPayload(listing, buyer.alias, this.config);
     return { payload, buyer_message: value, generated_by: { provider, ...(model ? { model } : {}) } };
   }
 
@@ -246,10 +246,13 @@ export class Agent {
   }
 }
 
-/** Pure builder for the Invoicing v2 draft + send notification (shared by tasks and chat tools). */
+/**
+ * Pure builder for the Invoicing v2 draft + send notification (shared by tasks and chat tools).
+ * The recipient is a demo alias; the executor adds the email address at execution time.
+ */
 export function buildInvoicePayload(
   listing: ListingForSale,
-  buyer: Buyer,
+  recipientAlias: string,
   message: { subject: string; note: string },
   sellerBusinessName?: string,
 ): CreateAndSendInvoicePayload {
@@ -262,7 +265,6 @@ export function buildInvoicePayload(
       payment_term: { term_type: "NET_10" },
     },
     ...(sellerBusinessName ? { invoicer: { business_name: sellerBusinessName } } : {}),
-    primary_recipients: [{ billing_info: { email_address: buyer.email } }],
     items: [
       {
         name: listing.title.slice(0, 200),
@@ -273,12 +275,16 @@ export function buildInvoicePayload(
       },
     ],
   };
-  return { invoice, notification: { subject: message.subject, send_to_recipient: true, send_to_invoicer: true } };
+  return { recipient_alias: recipientAlias, invoice, notification: { subject: message.subject, send_to_recipient: true, send_to_invoicer: true } };
 }
 
-/** Pure builder for an Orders v2 payment link (spec 3.5 fallback path). */
+/**
+ * Pure builder for an Orders v2 payment link (spec 3.5 fallback path). The recipient is a demo
+ * alias; the executor adds `payment_source.paypal.email_address` at execution time.
+ */
 export function buildOrderPayload(
   listing: ListingForSale,
+  recipientAlias: string,
   config: Pick<AgentConfig, "publicBaseUrl" | "sellerBusinessName">,
 ): CreatePaymentLinkPayload {
   const currency = listing.price.currency_code;
@@ -318,7 +324,7 @@ export function buildOrderPayload(
       },
     },
   };
-  return { order };
+  return { recipient_alias: recipientAlias, order };
 }
 
 /** Disputes `tracking_info` uses `carrier_name` (+ `carrier_name_other` for OTHER). */

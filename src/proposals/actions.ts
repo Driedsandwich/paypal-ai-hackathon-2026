@@ -1,3 +1,4 @@
+import type { DemoBuyers } from "../demo/buyers.js";
 import type { PayPalClient } from "../paypal/client.js";
 import type {
   CreateOrderRequest,
@@ -8,12 +9,17 @@ import type {
   PayPalLink,
   ShippingTracker,
 } from "../paypal/types.js";
-import type { ProposalKind } from "./store.js";
+import type { OrderRegistry } from "./order-registry.js";
+import { ProposalPolicyError, type ExecutionContext, type ProposalKind } from "./store.js";
 
-// Payload shapes, one per proposal kind. These are exactly what the seller sees
-// before approving, and exactly what is sent to PayPal after approval.
+// Payload shapes, one per proposal kind. These are what the seller sees before approving
+// and what is sent to PayPal after approval. Recipients are stored by demo alias
+// ("Demo buyer 1"); the executor resolves the alias to the sandbox email right before the
+// PayPal call, so the address never appears in a proposal.
 
 export interface CreateAndSendInvoicePayload {
+  /** A DEMO_BUYER_EMAILS alias; becomes primary_recipients[0].billing_info.email_address. */
+  recipient_alias: string;
   invoice: InvoiceDraft;
   notification: InvoiceNotification;
 }
@@ -22,6 +28,8 @@ export interface SendReminderPayload {
   notification: InvoiceNotification;
 }
 export interface CreatePaymentLinkPayload {
+  /** A DEMO_BUYER_EMAILS alias; becomes payment_source.paypal.email_address (the PayPal account the link is for). */
+  recipient_alias: string;
   order: CreateOrderRequest;
 }
 export interface CaptureOrderPayload {
@@ -76,38 +84,80 @@ export function payerLinkOf(links: PayPalLink[] | undefined): string | undefined
   return (links?.find((l) => l.rel === "payer-action") ?? links?.find((l) => l.rel === "approve"))?.href;
 }
 
-async function createAndSend(paypal: PayPalClient, p: CreateAndSendInvoicePayload) {
-  const invoice: InvoiceDraft = structuredClone(p.invoice) as InvoiceDraft;
+export interface ExecutorOptions {
+  /** The allowlist of recipients (DEMO_BUYER_EMAILS). */
+  buyers: DemoBuyers;
+  /** Orders created here are registered to the proposal's session (for capture). */
+  orders?: OrderRegistry;
+}
+
+function resolveRecipient(buyers: DemoBuyers, alias: unknown): string {
+  const buyer = typeof alias === "string" ? buyers.resolve(alias) : undefined;
+  if (!buyer) {
+    throw new ProposalPolicyError(
+      buyers.size === 0
+        ? "No demo buyers are configured (DEMO_BUYER_EMAILS), so nothing can be sent on this demo."
+        : `Invoices and payment links can only go to the demo buyers (${buyers.aliases.join(", ")}).`,
+    );
+  }
+  return buyer.email;
+}
+
+/** Builds the invoice that is sent: the stored draft plus the resolved demo-buyer recipient. */
+export function invoiceForRecipient(buyers: DemoBuyers, p: CreateAndSendInvoicePayload): { invoice: InvoiceDraft; notification: InvoiceNotification } {
+  const email = resolveRecipient(buyers, p.recipient_alias);
+  if (p.invoice.primary_recipients?.length || p.notification.additional_recipients?.length) {
+    throw new ProposalPolicyError("This invoice names recipients directly; on this demo invoices only go to demo buyers chosen by alias.");
+  }
+  const invoice = structuredClone(p.invoice) as InvoiceDraft;
+  invoice.primary_recipients = [{ billing_info: { email_address: email } }];
+  return { invoice, notification: structuredClone(p.notification) as InvoiceNotification };
+}
+
+/** Builds the order that is sent: the stored order plus the resolved demo-buyer PayPal account. */
+export function orderForRecipient(buyers: DemoBuyers, p: CreatePaymentLinkPayload): CreateOrderRequest {
+  const email = resolveRecipient(buyers, p.recipient_alias);
+  const order = structuredClone(p.order) as CreateOrderRequest;
+  if (order.payment_source?.paypal?.email_address !== undefined) {
+    throw new ProposalPolicyError("This payment link names a PayPal account directly; on this demo links only go to demo buyers chosen by alias.");
+  }
+  order.payment_source = { ...order.payment_source, paypal: { ...order.payment_source?.paypal, email_address: email } };
+  return order;
+}
+
+async function createAndSend(paypal: PayPalClient, buyers: DemoBuyers, p: CreateAndSendInvoicePayload) {
+  const { invoice, notification } = invoiceForRecipient(buyers, p);
   if (!invoice.detail.invoice_number) {
     invoice.detail.invoice_number = await paypal.generateNextInvoiceNumber();
   }
   const created = await paypal.createDraftInvoice(invoice);
-  const link = await paypal.sendInvoice(created.id, p.notification);
-  return { invoiceId: created.id, invoiceNumber: invoice.detail.invoice_number, payerLink: link?.href };
+  const link = await paypal.sendInvoice(created.id, notification);
+  return { invoiceId: created.id, invoiceNumber: invoice.detail.invoice_number, recipient: p.recipient_alias, payerLink: link?.href };
 }
 
-async function createLink(paypal: PayPalClient, p: CreatePaymentLinkPayload) {
-  const order = await paypal.createOrder(p.order);
-  return { orderId: order.id, status: order.status, payerLink: payerLinkOf(order.links) };
+async function createLink(paypal: PayPalClient, opts: ExecutorOptions, p: CreatePaymentLinkPayload, ctx: ExecutionContext) {
+  const order = await paypal.createOrder(orderForRecipient(opts.buyers, p));
+  opts.orders?.register(order.id, ctx.owner);
+  return { orderId: order.id, status: order.status, recipient: p.recipient_alias, payerLink: payerLinkOf(order.links) };
 }
 
 /**
  * The only place in the app that calls PayPal write methods.
  * Used by ProposalStore.approve().
  */
-export function createPayPalExecutor(getPayPal: () => PayPalClient) {
-  return async (kind: ProposalKind, payload: unknown): Promise<unknown> => {
+export function createPayPalExecutor(getPayPal: () => PayPalClient, opts: ExecutorOptions) {
+  return async (kind: ProposalKind, payload: unknown, ctx: ExecutionContext): Promise<unknown> => {
     const paypal = getPayPal();
     switch (kind) {
       case "create_and_send_invoice":
-        return createAndSend(paypal, payload as CreateAndSendInvoicePayload);
+        return createAndSend(paypal, opts.buyers, payload as CreateAndSendInvoicePayload);
       case "send_invoice_reminder": {
         const p = payload as SendReminderPayload;
         await paypal.remindInvoice(p.invoiceId, p.notification);
         return { invoiceId: p.invoiceId, reminded: true };
       }
       case "create_payment_link":
-        return createLink(paypal, payload as CreatePaymentLinkPayload);
+        return createLink(paypal, opts, payload as CreatePaymentLinkPayload, ctx);
       case "capture_order": {
         const p = payload as CaptureOrderPayload;
         const order = await paypal.captureOrder(p.orderId);
@@ -143,8 +193,11 @@ export function createPayPalExecutor(getPayPal: () => PayPalClient) {
       case "seed_demo_data": {
         const p = payload as SeedDemoDataPayload;
         const results: unknown[] = [];
-        for (const inv of p.invoices ?? []) results.push(await createAndSend(paypal, inv));
-        for (const o of p.orders ?? []) results.push(await createLink(paypal, o));
+        // Check every recipient before the first write, so a bad entry cannot leave a partial seed.
+        for (const inv of p.invoices ?? []) invoiceForRecipient(opts.buyers, inv);
+        for (const o of p.orders ?? []) orderForRecipient(opts.buyers, o);
+        for (const inv of p.invoices ?? []) results.push(await createAndSend(paypal, opts.buyers, inv));
+        for (const o of p.orders ?? []) results.push(await createLink(paypal, opts, o, ctx));
         return { created: results };
       }
     }

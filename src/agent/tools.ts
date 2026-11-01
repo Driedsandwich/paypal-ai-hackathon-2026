@@ -3,7 +3,8 @@ import type { AiMessage, AiProvider, AiToolSpec } from "../ai/provider.js";
 import { carrierFor } from "../paypal/carriers.js";
 import type { PayPalClient } from "../paypal/client.js";
 import type { Invoice } from "../paypal/types.js";
-import type { ProposalStore } from "../proposals/store.js";
+import type { DemoBuyers } from "../demo/buyers.js";
+import type { ProposalKind, ProposalStore } from "../proposals/store.js";
 import { showMoney } from "../money.js";
 import { SellerMoneySchema } from "./schemas.js";
 import { buildInvoicePayload, buildOrderPayload, type AgentConfig } from "./tasks.js";
@@ -19,6 +20,10 @@ export interface ToolDeps {
   proposals: ProposalStore;
   agentConfig: AgentConfig;
   paymentPath: "invoice" | "order";
+  /** Demo session of the visitor chatting; proposals created by tools belong to it. */
+  sessionId: string;
+  /** Recipients by alias (DEMO_BUYER_EMAILS). The model only ever sees aliases. */
+  buyers: DemoBuyers;
 }
 
 const NOT_CONFIGURED = { error: "PayPal is not configured on this server (set PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET)." };
@@ -45,8 +50,9 @@ function pending(p: { id: string; title: string }) {
 }
 
 export function agentTools(deps: ToolDeps): AiToolSpec[] {
-  const { paypal, proposals } = deps;
+  const { paypal } = deps;
   const read = async <T>(fn: (pp: PayPalClient) => Promise<T>) => (paypal ? fn(paypal) : NOT_CONFIGURED);
+  const proposals = { propose: <P>(kind: ProposalKind, title: string, payload: P) => deps.proposals.propose(kind, title, payload, { owner: deps.sessionId }) };
 
   const tools: AiToolSpec[] = [
     tool("list_invoices", "List the seller's recent PayPal invoices with status and amounts.", z.object({ page: z.number().int().min(1).max(100).optional(), page_size: z.number().int().min(1).max(50).optional() }), (i) =>
@@ -110,7 +116,14 @@ export function agentTools(deps: ToolDeps): AiToolSpec[] {
     ),
   ];
 
+  const aliases = deps.buyers.aliases;
+  const buyerAlias = (aliases.length ? z.enum(aliases as [string, ...string[]]) : z.string().max(40)).describe(
+    aliases.length ? `Demo buyer alias, one of: ${aliases.join(", ")}` : "Demo buyer alias (none are configured on this server)",
+  );
+  const noBuyers = { error: "No demo buyers are configured on this server (DEMO_BUYER_EMAILS), so invoices and payment links cannot be prepared." };
+  const unknownBuyer = { error: `Unknown buyer. Use one of the demo buyer aliases: ${aliases.join(", ")}.` };
   const sale = z.object({
+    buyer: buyerAlias,
     item_title: z.string().min(1).max(127),
     description: z.string().max(1000).optional(),
     price: SellerMoneySchema,
@@ -120,17 +133,23 @@ export function agentTools(deps: ToolDeps): AiToolSpec[] {
   });
   if (deps.paymentPath === "invoice") {
     tools.push(
-      tool("create_invoice", "Propose creating and sending a PayPal invoice to a buyer. The seller must approve.", sale.extend({ buyer_email: z.email() }), async (i) => {
+      tool("create_invoice", "Propose creating and sending a PayPal invoice to a demo buyer (chosen by alias). The seller must approve.", sale, async (i) => {
+        if (aliases.length === 0) return noBuyers;
+        const buyer = deps.buyers.resolve(i.buyer);
+        if (!buyer) return unknownBuyer;
         const listing = { title: i.item_title, description: i.description ?? "", price: i.price, quantity: i.quantity ?? 1 };
-        const payload = buildInvoicePayload(listing, { email: i.buyer_email }, { subject: i.subject, note: i.note }, deps.agentConfig.sellerBusinessName);
-        return pending(proposals.propose("create_and_send_invoice", `Send invoice for ${showMoney(i.price)}: ${i.item_title}`, payload));
+        const payload = buildInvoicePayload(listing, buyer.alias, { subject: i.subject, note: i.note }, deps.agentConfig.sellerBusinessName);
+        return pending(proposals.propose("create_and_send_invoice", `Send invoice for ${showMoney(i.price)} to ${buyer.alias}: ${i.item_title}`, payload));
       }),
     );
   } else {
     tools.push(
-      tool("create_order", "Propose creating a PayPal payment link (Orders v2). The seller must approve.", sale, async (i) => {
+      tool("create_order", "Propose creating a PayPal payment link (Orders v2) for a demo buyer (chosen by alias). The seller must approve.", sale, async (i) => {
+        if (aliases.length === 0) return noBuyers;
+        const buyer = deps.buyers.resolve(i.buyer);
+        if (!buyer) return unknownBuyer;
         const listing = { title: i.item_title, description: i.description ?? "", price: i.price, quantity: i.quantity ?? 1 };
-        return pending(proposals.propose("create_payment_link", `Create payment link for ${showMoney(i.price)}: ${i.item_title}`, buildOrderPayload(listing, deps.agentConfig)));
+        return pending(proposals.propose("create_payment_link", `Create payment link for ${showMoney(i.price)} for ${buyer.alias}: ${i.item_title}`, buildOrderPayload(listing, buyer.alias, deps.agentConfig)));
       }),
     );
   }
@@ -140,6 +159,7 @@ export function agentTools(deps: ToolDeps): AiToolSpec[] {
 const CHAT_SYSTEM = `You are Okuri, an AI export desk for a small Japanese seller who sells to overseas buyers and gets paid with PayPal.
 The seller may write in Japanese or English; answer in the seller's language, but write anything meant for buyers in English.
 Use the tools to look up PayPal invoices, orders and disputes. Tools that change something at PayPal or contact a buyer only create proposals: tell the seller that they must approve each proposal in the app. Never claim something was sent.
+Buyers are chosen by demo alias (for example "Demo buyer 1"); you never see or need email addresses.
 Never invent invoice ids, amounts, tracking numbers or buyer details; ask the seller when something is missing.`;
 
 export const ChatInputSchema = z.object({
@@ -150,7 +170,7 @@ export const ChatInputSchema = z.object({
 });
 
 export async function chat(ai: AiProvider, deps: ToolDeps, messages: AiMessage[], maxTokens: number) {
-  const before = new Set(deps.proposals.list().map((p) => p.id));
+  const before = new Set(deps.proposals.list({ owner: deps.sessionId }).map((p) => p.id));
   const result = await ai.complete({
     task: "chat",
     messages: [{ role: "system", content: CHAT_SYSTEM }, ...messages],
@@ -158,7 +178,7 @@ export async function chat(ai: AiProvider, deps: ToolDeps, messages: AiMessage[]
     maxTokens,
     maxSteps: 5,
   });
-  const proposals = deps.proposals.list().filter((p) => !before.has(p.id));
+  const proposals = deps.proposals.list({ owner: deps.sessionId }).filter((p) => !before.has(p.id));
   return {
     reply: result.text,
     tool_calls: (result.toolCalls ?? []).map((c) => ({ name: c.name, input: c.input })),

@@ -51,6 +51,8 @@ export class ProposalPolicyError extends Error {
 
 export interface Proposal<P = unknown> {
   id: string;
+  /** Demo session that created the proposal. Only this session can see, approve or reject it. Never returned publicly. */
+  owner: string;
   kind: ProposalKind;
   /** One line for the seller, e.g. "Send invoice for USD 80.00 to the buyer". */
   title: string;
@@ -73,7 +75,18 @@ export class ProposalError extends Error {
   }
 }
 
-export type Executor = (kind: ProposalKind, payload: unknown) => Promise<unknown>;
+export interface ExecutionContext {
+  proposalId: string;
+  /** Session that owns the proposal (e.g. created payment links are registered to it). */
+  owner: string;
+}
+
+export type Executor = (kind: ProposalKind, payload: unknown, ctx: ExecutionContext) => Promise<unknown>;
+
+export interface ProposeOptions {
+  /** Session id of the visitor the proposal belongs to. */
+  owner: string;
+}
 
 function deepFreeze<T>(value: T): T {
   if (value && typeof value === "object") {
@@ -99,10 +112,12 @@ export class ProposalStore {
     } = {},
   ) {}
 
-  propose<P>(kind: ProposalKind, title: string, payload: P): Proposal<P> {
+  propose<P>(kind: ProposalKind, title: string, payload: P, opts: ProposeOptions): Proposal<P> {
+    if (!opts.owner) throw new Error("a proposal needs an owner session");
     const now = this.options.now?.() ?? new Date();
     const proposal: Proposal<P> = {
       id: this.options.newId?.() ?? `prop_${randomUUID()}`,
+      owner: opts.owner,
       kind,
       title,
       payload: deepFreeze(structuredClone(payload)),
@@ -114,17 +129,24 @@ export class ProposalStore {
     return proposal;
   }
 
-  get(id: string): Proposal | undefined {
+  /** The proposal if it exists and belongs to `owner` (other sessions' proposals look absent). */
+  get(id: string, owner: string): Proposal | undefined {
+    const p = this.items.get(id);
+    return p && p.owner === owner ? p : undefined;
+  }
+
+  /** Any proposal by id, regardless of owner. Server-internal use only (e.g. capture de-duplication). */
+  peek(id: string): Proposal | undefined {
     return this.items.get(id);
   }
 
-  /** Newest first. */
-  list(filter?: { status?: ProposalStatus }): Proposal[] {
-    return [...this.items.values()].reverse().filter((p) => !filter?.status || p.status === filter.status);
+  /** The owner's proposals, newest first. */
+  list(filter: { owner: string; status?: ProposalStatus }): Proposal[] {
+    return [...this.items.values()].reverse().filter((p) => p.owner === filter.owner && (!filter.status || p.status === filter.status));
   }
 
-  reject(id: string): Proposal {
-    const p = this.pending(id);
+  reject(id: string, owner: string): Proposal {
+    const p = this.pending(id, owner);
     p.status = "rejected";
     p.decidedAt = (this.options.now?.() ?? new Date()).toISOString();
     return p;
@@ -134,12 +156,12 @@ export class ProposalStore {
    * Runs the stored payload once. The status flips to "executing" before the first
    * await, so a second concurrent approve of the same id is refused.
    */
-  async approve(id: string): Promise<Proposal> {
-    const p = this.pending(id);
+  async approve(id: string, owner: string): Promise<Proposal> {
+    const p = this.pending(id, owner);
     p.status = "executing";
     p.decidedAt = (this.options.now?.() ?? new Date()).toISOString();
     try {
-      p.result = await this.execute(p.kind, p.payload);
+      p.result = await this.execute(p.kind, p.payload, { proposalId: p.id, owner: p.owner });
       p.status = "executed";
     } catch (err) {
       p.status = err instanceof ProposalObsoleteError ? "obsolete" : this.options.isUnknownOutcome?.(err) ? "unknown" : "failed";
@@ -148,8 +170,8 @@ export class ProposalStore {
     return p;
   }
 
-  private pending(id: string): Proposal {
-    const p = this.items.get(id);
+  private pending(id: string, owner: string): Proposal {
+    const p = this.get(id, owner);
     if (!p) throw new ProposalError(`proposal ${id} not found`, "not_found");
     if (p.status !== "pending") throw new ProposalError(`proposal ${id} is ${p.status}, not pending`, "not_pending");
     return p;

@@ -6,10 +6,13 @@ import { AgentOutputError, extractJson } from "../src/agent/json-task.js";
 import { EvidenceInputSchema, JpItemSchema } from "../src/agent/schemas.js";
 import { Agent, type AgentConfig } from "../src/agent/tasks.js";
 import { agentTools, chat } from "../src/agent/tools.js";
+import { DemoBuyers } from "../src/demo/buyers.js";
 import { ProposalStore } from "../src/proposals/store.js";
 import { fakeEmail } from "./helpers/fake-fetch.js";
 import { paypalWith } from "./helpers/paypal.js";
 
+const BUYERS = new DemoBuyers([fakeEmail("b1"), fakeEmail("b2")]);
+const TOOL_BASE = { agentConfig: undefined as unknown as AgentConfig, sessionId: "session-me", buyers: BUYERS };
 const CONFIG: AgentConfig = { fxJpyPerUsd: 150, maxOutputTokens: 800, sellerBusinessName: "Okuri Demo Shop", publicBaseUrl: "http://localhost:3000/" };
 const offline = () => createAiProviderFromEnv({ AI_PROVIDER: "fake" });
 /** Offline provider that records requests (test-only option). */
@@ -68,23 +71,25 @@ describe("prepareInvoice / preparePaymentLink", () => {
   const listing = { title: "Handmade Japanese Tea Bowl", description: "Stoneware.", price: { currency_code: "USD", value: "80.00" }, quantity: 1 };
 
   it("builds an Invoicing v2 draft for approval without calling PayPal", async () => {
-    const prepared = await new Agent(offline(), CONFIG).prepareInvoice(listing, { email: fakeEmail("buyer") });
+    const prepared = await new Agent(offline(), CONFIG).prepareInvoice(listing, { alias: "Demo buyer 1" });
+    expect(prepared.payload.recipient_alias).toBe("Demo buyer 1");
+    expect(JSON.stringify(prepared.payload)).not.toContain("@");
     expect(prepared.payload.invoice).toEqual({
       detail: { currency_code: "USD", note: prepared.buyer_message.note, payment_term: { term_type: "NET_10" } },
       invoicer: { business_name: "Okuri Demo Shop" },
-      primary_recipients: [{ billing_info: { email_address: fakeEmail("buyer") } }],
       items: [{ name: "Handmade Japanese Tea Bowl", description: "Stoneware.", quantity: "1", unit_amount: { currency_code: "USD", value: "80.00" }, unit_of_measure: "QUANTITY" }],
     });
     expect(prepared.payload.notification).toMatchObject({ send_to_recipient: true, subject: expect.stringContaining("Tea Bowl") });
   });
 
   it("allows other ISO currencies", async () => {
-    const prepared = await new Agent(offline(), CONFIG).prepareInvoice({ ...listing, price: { currency_code: "EUR", value: "75.00" } }, { email: fakeEmail("b") });
+    const prepared = await new Agent(offline(), CONFIG).prepareInvoice({ ...listing, price: { currency_code: "EUR", value: "75.00" } }, { alias: "Demo buyer 2" });
     expect(prepared.payload.invoice.detail.currency_code).toBe("EUR");
   });
 
   it("builds an Orders v2 payment link with return/cancel URLs and item breakdown", async () => {
-    const prepared = await new Agent(offline(), CONFIG).preparePaymentLink({ ...listing, quantity: 2 });
+    const prepared = await new Agent(offline(), CONFIG).preparePaymentLink({ ...listing, quantity: 2 }, { alias: "Demo buyer 1" });
+    expect(prepared.payload.recipient_alias).toBe("Demo buyer 1");
     const unit = prepared.payload.order.purchase_units[0]!;
     expect(unit.amount).toEqual({ currency_code: "USD", value: "160.00", breakdown: { item_total: { currency_code: "USD", value: "160.00" } } });
     expect(unit.items?.[0]).toMatchObject({ quantity: "2", unit_amount: { value: "80.00" }, category: "PHYSICAL_GOODS" });
@@ -179,12 +184,12 @@ describe("free chat with tools", () => {
       c.url.includes("/v2/invoicing/invoices?") ? { json: { total_items: 1, items: [{ id: "INV2-1", status: "SENT", detail: { currency_code: "USD", invoice_number: "0001" } }] } } : undefined,
     );
     const proposals = new ProposalStore(async () => undefined);
-    const res = await chat(offline(), { paypal: client, proposals, agentConfig: CONFIG, paymentPath: "invoice" }, [{ role: "user", content: "未払いの請求書を見せて" }], 500);
+    const res = await chat(offline(), { ...TOOL_BASE, paypal: client, proposals, agentConfig: CONFIG, paymentPath: "invoice" }, [{ role: "user", content: "未払いの請求書を見せて" }], 500);
     expect(res.tool_calls).toEqual([{ name: "list_invoices", input: { page_size: 10 } }]);
     expect(res.reply).toContain("- 0001: SENT");
     expect(res.proposals).toEqual([]);
 
-    const noPayPal = await chat(offline(), { paypal: undefined, proposals, agentConfig: CONFIG, paymentPath: "invoice" }, [{ role: "user", content: "show disputes" }], 500);
+    const noPayPal = await chat(offline(), { ...TOOL_BASE, paypal: undefined, proposals, agentConfig: CONFIG, paymentPath: "invoice" }, [{ role: "user", content: "show disputes" }], 500);
     expect(noPayPal.reply).toMatch(/could not read your disputes: PayPal is not configured/);
   });
 
@@ -201,11 +206,11 @@ describe("free chat with tools", () => {
           { name: "create_shipment_tracking", input: { carrier: "Japan Post", tracking_number: "EJ123456789JP", transaction_id: "8MC585209K746392H" } },
           { name: "send_dispute_message", input: { dispute_id: "PP-D-1", message: "Hello" } },
           { name: "accept_dispute_claim", input: { dispute_id: "PP-D-1", note: "Refund" } },
-          { name: "create_invoice", input: { item_title: "Tea bowl", price: { currency_code: "USD", value: "80.00" }, subject: "Invoice", note: "Thanks for your order!", buyer_email: fakeEmail("b") } },
+          { name: "create_invoice", input: { buyer: "Demo buyer 2", item_title: "Tea bowl", price: { currency_code: "USD", value: "80.00" }, subject: "Invoice", note: "Thanks for your order!" } },
         ],
       },
     ]);
-    const res = await chat(ai, { paypal: client, proposals, agentConfig: CONFIG, paymentPath: "invoice" }, [{ role: "user", content: "do it all" }], 500);
+    const res = await chat(ai, { ...TOOL_BASE, paypal: client, proposals, agentConfig: CONFIG, paymentPath: "invoice" }, [{ role: "user", content: "do it all" }], 500);
     expect(res.proposals.map((p) => [p.kind, p.status])).toEqual([
       ["create_and_send_invoice", "pending"],
       ["accept_dispute_claim", "pending"],
@@ -215,14 +220,33 @@ describe("free chat with tools", () => {
     ]);
     expect(apiCalls()).toHaveLength(0);
     expect((res.proposals[3]!.payload as { trackers: Array<{ carrier: string }> }).trackers[0]!.carrier).toBe("JPN_JAPAN_POST");
+    expect(res.proposals[0]!.payload).toMatchObject({ recipient_alias: "Demo buyer 2" });
+    expect(res.proposals.every((p) => p.owner === "session-me")).toBe(true);
+    // Another session does not see them.
+    expect(proposals.list({ owner: "someone-else" })).toEqual([]);
+  });
+
+  it("create_invoice takes a demo buyer alias, never an email address", async () => {
+    const proposals = new ProposalStore(async () => undefined);
+    const tool = agentTools({ ...TOOL_BASE, paypal: undefined, proposals, agentConfig: CONFIG, paymentPath: "invoice" }).find((t) => t.name === "create_invoice")!;
+    const base = { item_title: "Tea bowl", price: { currency_code: "USD", value: "80.00" }, subject: "Invoice", note: "Thanks for your order!" };
+    expect(() => tool.inputSchema.parse({ ...base, buyer: fakeEmail("someone") })).toThrow();
+    expect(() => tool.inputSchema.parse({ ...base, buyer_email: fakeEmail("someone") })).toThrow();
+    expect(tool.description).not.toContain("@");
+    const json = JSON.stringify((await import("zod")).z.toJSONSchema(tool.inputSchema, { io: "input" }));
+    expect(json).toContain("Demo buyer 1");
+    expect(json).not.toContain("@");
+
+    const none = agentTools({ ...TOOL_BASE, buyers: new DemoBuyers([]), paypal: undefined, proposals, agentConfig: CONFIG, paymentPath: "invoice" }).find((t) => t.name === "create_invoice")!;
+    expect(await none.execute({ ...base, buyer: "Demo buyer 1" })).toMatchObject({ error: expect.stringMatching(/No demo buyers/) });
   });
 
   it("offers create_order instead of create_invoice on the order path, and read tools explain missing PayPal", async () => {
     const proposals = new ProposalStore(async () => undefined);
-    const names = agentTools({ paypal: undefined, proposals, agentConfig: CONFIG, paymentPath: "order" }).map((t) => t.name);
+    const names = agentTools({ ...TOOL_BASE, paypal: undefined, proposals, agentConfig: CONFIG, paymentPath: "order" }).map((t) => t.name);
     expect(names).toContain("create_order");
     expect(names).not.toContain("create_invoice");
-    const list = agentTools({ paypal: undefined, proposals, agentConfig: CONFIG, paymentPath: "order" }).find((t) => t.name === "list_invoices")!;
+    const list = agentTools({ ...TOOL_BASE, paypal: undefined, proposals, agentConfig: CONFIG, paymentPath: "order" }).find((t) => t.name === "list_invoices")!;
     expect(await list.execute({})).toMatchObject({ error: expect.stringMatching(/not configured/) });
   });
 });

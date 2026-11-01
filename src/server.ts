@@ -13,6 +13,8 @@ import { readBody, sendError, sendJson } from "./http/util.js";
 import { AiLimiter } from "./limits/rate-limit.js";
 import { PayPalApiError, PayPalClient, PayPalTimeoutError, handlePayPalWebhook, type PayPalConfig } from "./paypal/index.js";
 import { createPayPalExecutor } from "./proposals/actions.js";
+import { OrderRegistry } from "./proposals/order-registry.js";
+import { DemoBuyers } from "./demo/buyers.js";
 import { ProposalObsoleteError, ProposalPolicyError, ProposalStore } from "./proposals/store.js";
 import { MoneyError } from "./money.js";
 
@@ -31,6 +33,7 @@ export interface AppOptions {
   events?: EventLog;
   proposals?: ProposalStore;
   limiter?: AiLimiter;
+  orders?: OrderRegistry;
   /** Directory with the built UI (index.html). */
   staticDir?: string;
   log?: (msg: string) => void;
@@ -55,13 +58,18 @@ export function buildDeps(options: AppOptions = {}): ApiDeps & { log: (msg: stri
   const paypal = options.paypal ?? (options.paypalConfig ? new PayPalClient({ config: options.paypalConfig }) : undefined);
   const ai = options.ai ?? new FakeAiProvider([offlineReply]);
   const log = options.log ?? (() => {});
+  const buyers = new DemoBuyers(settings.demoBuyerEmails);
+  const orders = options.orders ?? new OrderRegistry();
   const proposals =
     options.proposals ??
     new ProposalStore(
-      createPayPalExecutor(() => {
-        if (!paypal) throw new Error("PayPal is not configured");
-        return paypal;
-      }),
+      createPayPalExecutor(
+        () => {
+          if (!paypal) throw new Error("PayPal is not configured");
+          return paypal;
+        },
+        { buyers, orders },
+      ),
       { describeError: (err) => describeExecutionError(err, log), isUnknownOutcome: (err) => err instanceof PayPalTimeoutError && err.write },
     );
   return {
@@ -80,6 +88,8 @@ export function buildDeps(options: AppOptions = {}): ApiDeps & { log: (msg: stri
     limiter:
       options.limiter ??
       new AiLimiter({ perIpMax: settings.aiRateLimitPerIp, windowMs: settings.aiRateLimitWindowMinutes * 60_000, dailyCap: settings.aiDailyCap }),
+    buyers,
+    orders,
     log,
     staticDir: options.staticDir,
   };
@@ -134,9 +144,13 @@ export function createApp(options: AppOptions = {}): Server {
       if (url.pathname === "/paypal/return" || url.pathname === "/paypal/cancel") {
         const token = url.searchParams.get("token") ?? "";
         if (url.pathname === "/paypal/return" && deps.paypal && ORDER_TOKEN.test(token)) {
-          // The buyer approved a payment link: queue the capture for the seller's approval.
-          const already = deps.proposals.list().some((p) => p.kind === "capture_order" && (p.payload as { orderId: string }).orderId === token);
-          if (!already) deps.proposals.propose("capture_order", `Capture payment for order ${token}`, { orderId: token });
+          // The buyer approved a payment link created here: queue the capture for the seller's
+          // approval, in the session that created the link (the buyer's browser may differ).
+          const known = deps.orders.get(token);
+          const queued = known?.captureProposalId ? deps.proposals.peek(known.captureProposalId) : undefined;
+          if (known && !queued) {
+            known.captureProposalId = deps.proposals.propose("capture_order", `Capture payment for order ${token}`, { orderId: token }, { owner: known.owner }).id;
+          }
         }
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
         return res.end(paypalReturnPage(url.pathname === "/paypal/return" ? "return" : "cancel"));

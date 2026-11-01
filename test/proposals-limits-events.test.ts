@@ -3,9 +3,15 @@ import { renderTextPdf } from "../src/docs/simple-pdf.js";
 import { EventLog, WebhookDedup } from "../src/events/log.js";
 import { TtlMap } from "../src/util/ttl-map.js";
 import { AiLimiter } from "../src/limits/rate-limit.js";
+import { DemoBuyers } from "../src/demo/buyers.js";
 import { createPayPalExecutor, payerLinkOf } from "../src/proposals/actions.js";
-import { ProposalError, ProposalStore } from "../src/proposals/store.js";
+import { OrderRegistry } from "../src/proposals/order-registry.js";
+import { ProposalError, ProposalPolicyError, ProposalStore } from "../src/proposals/store.js";
 import { fakeEmail } from "./helpers/fake-fetch.js";
+
+const ME = { owner: "session-me" };
+const CTX = { proposalId: "prop_1", owner: "session-me" };
+const BUYERS = new DemoBuyers([fakeEmail("b1"), fakeEmail("b2")]);
 import { paypalWith, SANDBOX } from "./helpers/paypal.js";
 
 describe("ProposalStore (approval gate)", () => {
@@ -15,34 +21,34 @@ describe("ProposalStore (approval gate)", () => {
       runs.push({ kind, payload });
       return { done: true };
     });
-    const p = store.propose("send_dispute_message", "Reply to buyer", { disputeId: "D1", message: "hello" });
+    const p = store.propose("send_dispute_message", "Reply to buyer", { disputeId: "D1", message: "hello" }, ME);
     expect(p.status).toBe("pending");
     expect(runs).toHaveLength(0);
 
-    const done = await store.approve(p.id);
+    const done = await store.approve(p.id, ME.owner);
     expect(done.status).toBe("executed");
     expect(done.result).toEqual({ done: true });
     expect(runs).toEqual([{ kind: "send_dispute_message", payload: { disputeId: "D1", message: "hello" } }]);
 
-    await expect(store.approve(p.id)).rejects.toMatchObject({ code: "not_pending" });
+    await expect(store.approve(p.id, ME.owner)).rejects.toMatchObject({ code: "not_pending" });
     expect(runs).toHaveLength(1);
   });
 
   it("refuses unknown and rejected proposals", async () => {
     let ran = false;
     const store = new ProposalStore(async () => void (ran = true));
-    await expect(store.approve("nope")).rejects.toBeInstanceOf(ProposalError);
-    const p = store.propose("accept_dispute_claim", "Accept claim", { disputeId: "D1", note: "n" });
-    store.reject(p.id);
-    await expect(store.approve(p.id)).rejects.toMatchObject({ code: "not_pending" });
-    expect(() => store.reject(p.id)).toThrow(ProposalError);
+    await expect(store.approve("nope", ME.owner)).rejects.toBeInstanceOf(ProposalError);
+    const p = store.propose("accept_dispute_claim", "Accept claim", { disputeId: "D1", note: "n" }, ME);
+    store.reject(p.id, ME.owner);
+    await expect(store.approve(p.id, ME.owner)).rejects.toMatchObject({ code: "not_pending" });
+    expect(() => store.reject(p.id, ME.owner)).toThrow(ProposalError);
     expect(ran).toBe(false);
   });
 
   it("freezes the payload so it cannot be changed after the seller saw it", () => {
     const payload = { disputeId: "D1", message: "original" };
     const store = new ProposalStore(async () => undefined);
-    const p = store.propose("send_dispute_message", "t", payload);
+    const p = store.propose("send_dispute_message", "t", payload, ME);
     payload.message = "changed later";
     expect((p.payload as typeof payload).message).toBe("original");
     expect(() => {
@@ -53,9 +59,9 @@ describe("ProposalStore (approval gate)", () => {
   it("refuses a second approve while the first is still running", async () => {
     let release!: () => void;
     const store = new ProposalStore(() => new Promise((r) => (release = () => r("ok"))));
-    const p = store.propose("capture_order", "Capture", { orderId: "O1" });
-    const first = store.approve(p.id);
-    await expect(store.approve(p.id)).rejects.toMatchObject({ code: "not_pending" });
+    const p = store.propose("capture_order", "Capture", { orderId: "O1" }, ME);
+    const first = store.approve(p.id, ME.owner);
+    await expect(store.approve(p.id, ME.owner)).rejects.toMatchObject({ code: "not_pending" });
     release();
     expect((await first).status).toBe("executed");
   });
@@ -67,8 +73,8 @@ describe("ProposalStore (approval gate)", () => {
       },
       { describeError: (e) => ({ message: (e as Error).message }) },
     );
-    const p = store.propose("capture_order", "Capture", { orderId: "O1" });
-    const res = await store.approve(p.id);
+    const p = store.propose("capture_order", "Capture", { orderId: "O1" }, ME);
+    const res = await store.approve(p.id, ME.owner);
     expect(res.status).toBe("failed");
     expect(res.error).toEqual({ message: "boom" });
   });
@@ -82,22 +88,29 @@ describe("PayPal executor", () => {
       if (c.url.endsWith("/INV2-7/send")) return { json: { href: "https://www.sandbox.paypal.com/invoice/p/#INV2-7", rel: "payer-view" } };
       return undefined;
     });
-    const exec = createPayPalExecutor(() => client);
-    const result = await exec("create_and_send_invoice", {
-      invoice: {
-        detail: { currency_code: "USD" },
-        primary_recipients: [{ billing_info: { email_address: fakeEmail("buyer") } }],
-        items: [{ name: "Tea bowl", quantity: "1", unit_amount: { currency_code: "USD", value: "80.00" } }],
+    const exec = createPayPalExecutor(() => client, { buyers: BUYERS });
+    const result = await exec(
+      "create_and_send_invoice",
+      {
+        recipient_alias: "Demo buyer 2",
+        invoice: {
+          detail: { currency_code: "USD" },
+          items: [{ name: "Tea bowl", quantity: "1", unit_amount: { currency_code: "USD", value: "80.00" } }],
+        },
+        notification: { send_to_recipient: true },
       },
-      notification: { send_to_recipient: true },
-    });
-    expect(result).toEqual({ invoiceId: "INV2-7", invoiceNumber: "0007", payerLink: "https://www.sandbox.paypal.com/invoice/p/#INV2-7" });
+      CTX,
+    );
+    expect(result).toEqual({ invoiceId: "INV2-7", invoiceNumber: "0007", recipient: "Demo buyer 2", payerLink: "https://www.sandbox.paypal.com/invoice/p/#INV2-7" });
     expect(apiCalls().map((c) => c.url.replace(SANDBOX, ""))).toEqual([
       "/v2/invoicing/generate-next-invoice-number",
       "/v2/invoicing/invoices",
       "/v2/invoicing/invoices/INV2-7/send",
     ]);
-    expect(JSON.parse(apiCalls()[1]!.body!).detail.invoice_number).toBe("0007");
+    const sent = JSON.parse(apiCalls()[1]!.body!);
+    expect(sent.detail.invoice_number).toBe("0007");
+    // The alias is resolved to the allowlisted sandbox email only now, at execution.
+    expect(sent.primary_recipients).toEqual([{ billing_info: { email_address: fakeEmail("b2") } }]);
   });
 
   it("create_payment_link returns the payer-action link", async () => {
@@ -105,22 +118,70 @@ describe("PayPal executor", () => {
       status: 200,
       json: { id: "O-9", status: "PAYER_ACTION_REQUIRED", links: [{ rel: "payer-action", href: "https://www.sandbox.paypal.com/checkoutnow?token=O-9" }] },
     }));
-    const exec = createPayPalExecutor(() => client);
+    const orders = new OrderRegistry();
+    const exec = createPayPalExecutor(() => client, { buyers: BUYERS, orders });
     await expect(
-      exec("create_payment_link", { order: { intent: "CAPTURE", purchase_units: [{ amount: { currency_code: "USD", value: "1.00" } }] } }),
-    ).resolves.toEqual({ orderId: "O-9", status: "PAYER_ACTION_REQUIRED", payerLink: "https://www.sandbox.paypal.com/checkoutnow?token=O-9" });
+      exec("create_payment_link", { recipient_alias: "Demo buyer 1", order: { intent: "CAPTURE", purchase_units: [{ amount: { currency_code: "USD", value: "1.00" } }] } }, CTX),
+    ).resolves.toEqual({ orderId: "O-9", status: "PAYER_ACTION_REQUIRED", recipient: "Demo buyer 1", payerLink: "https://www.sandbox.paypal.com/checkoutnow?token=O-9" });
+    expect(orders.get("O-9")).toEqual({ owner: "session-me" });
     expect(payerLinkOf([{ rel: "approve", href: "a" }])).toBe("a");
   });
 
   it("provide_dispute_evidence decodes base64 attachments into evidence-file parts", async () => {
     const { client, apiCalls } = paypalWith(() => ({ json: { links: [] } }));
-    const exec = createPayPalExecutor(() => client);
-    await exec("provide_dispute_evidence", {
-      disputeId: "D1",
-      evidences: [{ evidence_type: "PROOF_OF_FULFILLMENT", notes: "n" }],
-      attachments: [{ name: "invoice.pdf", contentType: "application/pdf", base64: Buffer.from("%PDF-1.4").toString("base64") }],
-    });
+    const exec = createPayPalExecutor(() => client, { buyers: BUYERS });
+    await exec(
+      "provide_dispute_evidence",
+      {
+        disputeId: "D1",
+        evidences: [{ evidence_type: "PROOF_OF_FULFILLMENT", notes: "n" }],
+        attachments: [{ name: "invoice.pdf", contentType: "application/pdf", base64: Buffer.from("%PDF-1.4").toString("base64") }],
+      },
+      CTX,
+    );
     expect(apiCalls()[0]!.form?.[1]).toEqual({ name: "evidence-file", value: "%PDF-1.4", filename: "invoice.pdf", type: "application/pdf" });
+  });
+});
+
+describe("execution allowlist (F1)", () => {
+  const invoice = { detail: { currency_code: "USD" }, items: [{ name: "Tea bowl", quantity: "1", unit_amount: { currency_code: "USD", value: "80.00" } }] };
+  const order = { intent: "CAPTURE" as const, purchase_units: [{ amount: { currency_code: "USD", value: "1.00" } }] };
+
+  it("refuses recipients that are not demo buyers, before any PayPal call", async () => {
+    const { client, apiCalls } = paypalWith(() => ({ json: {} }));
+    const exec = createPayPalExecutor(() => client, { buyers: BUYERS });
+    const bad: Array<[Parameters<typeof exec>[0], unknown]> = [
+      ["create_and_send_invoice", { recipient_alias: "Demo buyer 7", invoice, notification: {} }],
+      ["create_and_send_invoice", { recipient_alias: "Demo buyer 1", invoice: { ...invoice, primary_recipients: [{ billing_info: { email_address: fakeEmail("x") } }] }, notification: {} }],
+      ["create_and_send_invoice", { recipient_alias: "Demo buyer 1", invoice, notification: { additional_recipients: [fakeEmail("x")] } }],
+      ["create_payment_link", { recipient_alias: "nobody", order }],
+      ["create_payment_link", { recipient_alias: "Demo buyer 1", order: { ...order, payment_source: { paypal: { email_address: fakeEmail("x") } } } }],
+      ["seed_demo_data", { invoices: [{ recipient_alias: "Demo buyer 1", invoice, notification: {} }, { recipient_alias: "Demo buyer 9", invoice, notification: {} }] }],
+    ];
+    for (const [kind, payload] of bad) await expect(exec(kind, payload, CTX)).rejects.toBeInstanceOf(ProposalPolicyError);
+    expect(apiCalls()).toHaveLength(0);
+    const none = createPayPalExecutor(() => client, { buyers: new DemoBuyers([]) });
+    await expect(none("create_payment_link", { recipient_alias: "Demo buyer 1", order }, CTX)).rejects.toThrow(/No demo buyers/);
+  });
+
+  it("aliases are case-insensitive and duplicates in DEMO_BUYER_EMAILS collapse", () => {
+    const buyers = new DemoBuyers([fakeEmail("b1"), ` ${fakeEmail("B1")} `, fakeEmail("b2")]);
+    expect(buyers.aliases).toEqual(["Demo buyer 1", "Demo buyer 2"]);
+    expect(buyers.resolve("  demo   BUYER 2 ")?.email).toBe(fakeEmail("b2"));
+    expect(buyers.isAllowed(fakeEmail("B2"))).toBe(true);
+    expect(buyers.aliasOf(fakeEmail("b1"))).toBe("Demo buyer 1");
+    expect(buyers.publicList()[0]).toEqual({ alias: "Demo buyer 1", email: "b***@example.com" });
+  });
+
+  it("store.get/list/approve/reject only work for the owner", async () => {
+    const store = new ProposalStore(async () => "ran");
+    const p = store.propose("capture_order", "Capture", { orderId: "O1" }, ME);
+    expect(store.get(p.id, "someone-else")).toBeUndefined();
+    expect(store.list({ owner: "someone-else" })).toEqual([]);
+    await expect(store.approve(p.id, "someone-else")).rejects.toMatchObject({ code: "not_found" });
+    expect(() => store.reject(p.id, "someone-else")).toThrow(ProposalError);
+    expect(store.get(p.id, ME.owner)?.status).toBe("pending");
+    expect(() => store.propose("capture_order", "x", {}, { owner: "" })).toThrow(/owner/);
   });
 });
 

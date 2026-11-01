@@ -73,7 +73,7 @@ export function ProposalCard({ proposal, onChange, children }: { proposal: Propo
       </div>
       {children}
       <details open={p.status === "pending"}>
-        <summary className="muted">Exact payload sent to PayPal on approval ({p.kind})</summary>
+        <summary className="muted">Payload sent to PayPal on approval ({p.kind}; buyers shown by demo alias)</summary>
         <pre>{JSON.stringify(p.payload, (k, v) => (k === "base64" && typeof v === "string" ? `${v.slice(0, 24)}… (${v.length} chars)` : v), 2)}</pre>
       </details>
       {p.status === "pending" && (

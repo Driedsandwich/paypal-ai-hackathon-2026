@@ -49,6 +49,7 @@ export function App() {
           Payments by PayPal ({health.paypal.configured ? `${health.paypal.env}` : "not connected"}) · AI by {aiLabel} · {health.paymentPath === "invoice" ? "Invoicing API" : "Orders API payment links"}
         </span>
       </header>
+      <div className="banner" role="note"><p><strong>{health.demo.notice}</strong> Proposals you create are visible only in this browser; invoices and payment links go only to the demo buyers.</p></div>
       {health.banner.length > 0 && (
         <div className="banner" role="status">{health.banner.map((b) => <p key={b}>{b}</p>)}</div>
       )}

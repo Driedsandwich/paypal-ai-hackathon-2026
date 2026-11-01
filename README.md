@@ -31,9 +31,10 @@ PayPal until the seller clicks Approve**, and the server enforces that.
    with AI*. You get an English title and description, item specifics, a USD price
    **estimate** (converted in code at `FX_JPY_PER_USD`), a plain customs description and an HS
    code candidate marked **check before use**.
-3. Enter a sandbox buyer email and click *Prepare invoice for approval*. A proposal card shows
-   the exact Invoicing v2 payload and the AI-written message to the buyer. Click **Approve and
-   send**: the app creates the draft invoice and sends it through PayPal.
+3. Choose a demo buyer (for example *Demo buyer 1*) and click *Prepare invoice for approval*.
+   A proposal card shows the Invoicing v2 payload (the buyer appears by alias) and the
+   AI-written message to the buyer. Click **Approve and send**: the app creates the draft
+   invoice and sends it through PayPal.
 4. **Invoices:** the grid is read live from the sandbox. *Draft reminders for unpaid invoices*
    asks the AI for a polite reminder per unpaid invoice; each one is a separate proposal.
 5. Pay the invoice as the sandbox buyer. If a webhook is configured, `INVOICING.INVOICE.PAID`
@@ -75,8 +76,8 @@ PayPal sandbox preparation:
 
 1. In the PayPal developer dashboard, create a sandbox REST app and copy its client ID and
    secret into `PAYPAL_CLIENT_ID` / `PAYPAL_CLIENT_SECRET`.
-2. Note the sandbox **personal** (buyer) account emails and put them in `DEMO_BUYER_EMAILS`
-   if you want *Seed demo data*.
+2. Note the sandbox **personal** (buyer) account emails and put them in `DEMO_BUYER_EMAILS`.
+   Invoices and payment links can only be sent to these accounts (shown as *Demo buyer 1, 2, …*).
 3. Optional: add a webhook for `https://<your-host>/webhooks/paypal` with the events
    `INVOICING.INVOICE.PAID`, `PAYMENT.CAPTURE.COMPLETED`, `CUSTOMER.DISPUTE.CREATED` and
    `CUSTOMER.DISPUTE.UPDATED`, and put its id in `PAYPAL_WEBHOOK_ID`.
@@ -157,7 +158,7 @@ See `.env.example`. Never commit `.env`. All are optional.
 | `FX_JPY_PER_USD` | Exchange rate for price estimates (default 150). |
 | `SELLER_BUSINESS_NAME` | Seller name on invoices and the PayPal checkout page. |
 | `PUBLIC_BASE_URL` | Public URL of the app, for PayPal return/cancel URLs (default `http://localhost:PORT`). |
-| `DEMO_BUYER_EMAILS` | Sandbox buyer account emails for *Seed demo data*, comma-separated. |
+| `DEMO_BUYER_EMAILS` | Sandbox buyer (personal) account emails, comma-separated. They are the **only** recipients invoices and payment links can go to; the UI and API show them as *Demo buyer 1, 2, …* and the address is added only at execution. |
 | `TRUST_PROXY_HOPS` | Number of trusted proxies in front of the app (default 0 = use the socket address). With N > 0 the client address is the N-th `X-Forwarded-For` entry from the right, validated as an IP (falls back to the socket address). Behind a single platform proxy such as Render, set 1. |
 | `AG_STUDIO_LICENSE` | AG Studio licence for the dashboard (next pass); empty shows a watermark. |
 | `MAX_CONCURRENT_REQUESTS` | Concurrent in-flight API, webhook and return-page requests; more get 503 with `Retry-After` (default 20). |

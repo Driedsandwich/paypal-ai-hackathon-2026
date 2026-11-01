@@ -1,12 +1,12 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import net from "node:net";
-import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { loadSettings } from "../src/config.js";
-import { createApp, type AppOptions } from "../src/server.js";
+import type { AppOptions } from "../src/server.js";
 import { FAKE_CONFIG, fakeEmail, type RecordedCall } from "./helpers/fake-fetch.js";
+import { startApp, visitor } from "./helpers/http.js";
 import { paypalError, paypalWith, SANDBOX } from "./helpers/paypal.js";
 
 let close: (() => Promise<void>) | undefined;
@@ -18,21 +18,15 @@ afterEach(async () => {
   tmp = undefined;
 });
 
+/** Starts the app; the returned get/post act as one visitor (cookie jar). `other()` is a second visitor. */
 async function start(options: AppOptions = {}) {
-  const server = createApp(options);
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  close = () => new Promise((resolve) => server.close(() => resolve()));
-  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-  const get = async (p: string) => {
-    const r = await fetch(`${base}${p}`);
-    return { status: r.status, headers: r.headers, body: (r.headers.get("content-type") ?? "").includes("json") ? ((await r.json()) as any) : await r.text() };
-  };
-  const post = async (p: string, body: unknown = {}, headers: Record<string, string> = { "Content-Type": "application/json" }) => {
-    const r = await fetch(`${base}${p}`, { method: "POST", headers, body: typeof body === "string" ? body : JSON.stringify(body) });
-    return { status: r.status, headers: r.headers, body: (await r.json()) as any };
-  };
-  return { base, get, post };
+  const app = await startApp(options);
+  close = app.close;
+  return { ...app, other: () => visitor(app.base) };
 }
+
+/** Two sandbox buyers, so tests have "Demo buyer 1" and "Demo buyer 2". */
+const BUYERS = { DEMO_BUYER_EMAILS: `${fakeEmail("b1")},${fakeEmail("b2")}` };
 
 const WRITE = (c: RecordedCall) => c.method !== "GET" && !c.url.endsWith("/v1/oauth2/token");
 
@@ -69,7 +63,7 @@ function sandbox(overrides: (c: RecordedCall) => { status?: number; json?: unkno
       return { json: { dispute_id: "PP-D-1", reason: "MERCHANDISE_OR_SERVICE_NOT_RECEIVED", status: "WAITING_FOR_SELLER_RESPONSE", dispute_amount: { currency_code: "USD", value: "40.00" }, create_time: "2026-10-28T03:00:00Z", messages: [{ posted_by: "BUYER", content: "Where is my item?" }] } };
     }
     if (u === "/v1/shipping/trackers-batch") return { json: { tracker_identifiers: [{ transaction_id: "8MC585209K746392H" }], errors: [] } };
-    if (u === "/v2/checkout/orders" && c.method === "POST") return { json: { id: "O-1", status: "PAYER_ACTION_REQUIRED", links: [{ rel: "payer-action", href: "https://www.sandbox.paypal.com/checkoutnow?token=O-1" }] } };
+    if (u === "/v2/checkout/orders" && c.method === "POST") return { json: { id: "5O190127TN364715T", status: "PAYER_ACTION_REQUIRED", links: [{ rel: "payer-action", href: "https://www.sandbox.paypal.com/checkoutnow?token=5O190127TN364715T" }] } };
     return undefined;
   });
 }
@@ -126,13 +120,15 @@ describe("offline start (AI_PROVIDER=fake, no PayPal variables)", () => {
 describe("approval gate over HTTP", () => {
   it("prepare creates a proposal and sends nothing; approve runs it once", async () => {
     const pp = sandbox();
-    const { post, get } = await start({ paypalConfig: FAKE_CONFIG, paypal: pp.client });
+    const { post, get } = await start({ paypalConfig: FAKE_CONFIG, paypal: pp.client, settings: loadSettings(BUYERS) });
 
-    const prepared = await post("/api/invoices/prepare", { listing: LISTING, buyer: { email: fakeEmail("buyer") } });
+    const prepared = await post("/api/invoices/prepare", { listing: LISTING, buyer: { alias: "Demo buyer 2" } });
     expect(prepared.status).toBe(200);
     const proposal = prepared.body.data.proposal;
-    expect(proposal).toMatchObject({ kind: "create_and_send_invoice", status: "pending" });
+    expect(proposal).toMatchObject({ kind: "create_and_send_invoice", status: "pending", payload: { recipient_alias: "Demo buyer 2" } });
+    expect(proposal.owner).toBeUndefined();
     expect(proposal.payload.invoice.items[0].unit_amount).toEqual({ currency_code: "USD", value: "80.00" });
+    expect(JSON.stringify(prepared.body)).not.toContain(fakeEmail("b2"));
     expect(pp.calls.filter(WRITE)).toHaveLength(0);
 
     // A tampered body on approve is ignored: the stored payload runs.
@@ -141,6 +137,7 @@ describe("approval gate over HTTP", () => {
     expect(approved.body.data).toMatchObject({ status: "executed", result: { invoiceId: "INV2-NEW", invoiceNumber: "0003" } });
     const created = pp.calls.find((c) => c.url === `${SANDBOX}/v2/invoicing/invoices` && c.method === "POST")!;
     expect(JSON.parse(created.body!).items[0].name).toBe("Handmade Japanese Tea Bowl");
+    expect(JSON.parse(created.body!).primary_recipients).toEqual([{ billing_info: { email_address: fakeEmail("b2") } }]);
 
     const again = await post(`/api/proposals/${proposal.id}/approve`);
     expect(again.status).toBe(409);
@@ -151,15 +148,11 @@ describe("approval gate over HTTP", () => {
 
   it("every state-changing route only proposes; rejected and unknown proposals cannot run", async () => {
     const pp = sandbox();
-    const { post } = await start({
-      paypalConfig: FAKE_CONFIG,
-      paypal: pp.client,
-      settings: loadSettings({ DEMO_BUYER_EMAILS: `${fakeEmail("b1")},${fakeEmail("b2")}` }),
-    });
+    const { post } = await start({ paypalConfig: FAKE_CONFIG, paypal: pp.client, settings: loadSettings(BUYERS) });
     const created = [
       await post("/api/tracking", { kind: "invoice", invoice_id: "INV2-PAID", carrier: "Japan Post", tracking_number: "EJ123456789JP" }),
       await post("/api/tracking", { kind: "order", order_id: "O-1", capture_id: "CAP-1", carrier: "Yamato", tracking_number: "1234-5678-9012" }),
-      await post("/api/orders/O-1/capture"),
+      await post("/api/invoices/prepare", { listing: LISTING, buyer: { alias: "Demo buyer 1" } }),
       await post("/api/disputes/PP-D-1/accept-claim", { note: "Refunding in full." }),
       await post("/api/demo/seed"),
       await post("/api/invoices/nudge", {}),
@@ -172,7 +165,7 @@ describe("approval gate over HTTP", () => {
       trackers: [{ transaction_id: "8MC585209K746392H", tracking_number: "EJ123456789JP", status: "SHIPPED", carrier: "JPN_JAPAN_POST", notify_buyer: true }],
     });
     expect(created[1]!.body.data.proposal.payload.tracker).toMatchObject({ carrier: "YAMATO", capture_id: "CAP-1" });
-    expect(created[4]!.body.data.proposal.payload.invoices).toHaveLength(4);
+    expect(created[4]!.body.data.proposal.payload.invoices.map((i: any) => i.recipient_alias)).toEqual(["Demo buyer 1", "Demo buyer 2", "Demo buyer 1", "Demo buyer 2"]);
     expect(created[5]!.body.data.proposals.map((p: any) => p.payload.invoiceId)).toEqual(["INV2-UNPAID"]);
     const pack = created[6]!.body.data;
     expect(pack.pack.unverified_facts).toEqual([]);
@@ -190,20 +183,30 @@ describe("approval gate over HTTP", () => {
     expect(pp.calls.filter(WRITE).map((c) => c.url.replace(SANDBOX, ""))).toEqual(["/v1/shipping/trackers-batch"]);
   });
 
-  it("order path: prepare proposes a payment link, and the PayPal return page queues a capture for approval", async () => {
+  it("order path: prepare proposes a payment link, and the PayPal return page queues a capture for the seller's session", async () => {
     const pp = sandbox();
-    const { post, get } = await start({ paypalConfig: FAKE_CONFIG, paypal: pp.client, settings: loadSettings({ PAYMENT_PATH: "order", PUBLIC_BASE_URL: "https://demo.invalid" }) });
-    const prepared = await post("/api/invoices/prepare", { listing: LISTING });
+    const { post, get, other } = await start({ paypalConfig: FAKE_CONFIG, paypal: pp.client, settings: loadSettings({ ...BUYERS, PAYMENT_PATH: "order", PUBLIC_BASE_URL: "https://demo.invalid" }) });
+    const prepared = await post("/api/invoices/prepare", { listing: LISTING, buyer: { alias: "Demo buyer 1" } });
     expect(prepared.body.data.path).toBe("order");
     expect(prepared.body.data.proposal.payload.order.payment_source.paypal.experience_context.return_url).toBe("https://demo.invalid/paypal/return");
     const approved = await post(`/api/proposals/${prepared.body.data.proposal.id}/approve`);
-    expect(approved.body.data.result).toEqual({ orderId: "O-1", status: "PAYER_ACTION_REQUIRED", payerLink: "https://www.sandbox.paypal.com/checkoutnow?token=O-1" });
+    expect(approved.body.data.result).toEqual({ orderId: "5O190127TN364715T", status: "PAYER_ACTION_REQUIRED", recipient: "Demo buyer 1", payerLink: "https://www.sandbox.paypal.com/checkoutnow?token=5O190127TN364715T" });
+    const createOrder = pp.calls.find((c) => c.url === `${SANDBOX}/v2/checkout/orders` && c.method === "POST")!;
+    expect(JSON.parse(createOrder.body!).payment_source.paypal.email_address).toBe(fakeEmail("b1"));
 
-    const page = await get("/paypal/return?token=O1TOKEN&PayerID=X");
-    expect(page.body).toMatch(/Payment approved/);
-    await get("/paypal/return?token=O1TOKEN");
+    // The buyer comes back in a different browser: the capture still goes to the seller's session.
+    const buyer = other();
+    await buyer.get("/paypal/return?token=5O190127TN364715T&PayerID=X");
+    await buyer.get("/paypal/return?token=5O190127TN364715T");
+    expect((await buyer.get("/api/proposals")).body.data).toEqual([]);
     const captures = (await get("/api/proposals?status=pending")).body.data.filter((p: any) => p.kind === "capture_order");
-    expect(captures.map((p: any) => p.payload)).toEqual([{ orderId: "O1TOKEN" }]);
+    expect(captures.map((p: any) => p.payload)).toEqual([{ orderId: "5O190127TN364715T" }]);
+
+    // Order ids this server did not create are ignored.
+    await get("/paypal/return?token=FORGED123");
+    expect((await get("/api/proposals?status=pending")).body.data.filter((p: any) => p.kind === "capture_order")).toHaveLength(1);
+    expect((await post("/api/orders/FORGED123/capture")).status).toBe(404);
+    expect((await buyer.post("/api/orders/5O190127TN364715T/capture")).status).toBe(404);
   });
 
   it("failed executions keep PayPal's debug_id for the seller", async () => {
@@ -222,6 +225,64 @@ describe("approval gate over HTTP", () => {
     const res = await get("/api/disputes");
     expect(res.status).toBe(502);
     expect(res.body).toEqual({ ok: false, error: { code: "paypal_error", message: "PayPal could not complete the request", paypal: expect.objectContaining({ debugId: "dbg-403", status: 403 }) } });
+  });
+});
+
+describe("demo sessions (F1)", () => {
+  it("sets an httpOnly SameSite=Lax session cookie, Secure when the app is served over https", async () => {
+    const { get } = await start();
+    const cookie = (await get("/api/proposals")).headers.get("set-cookie")!;
+    expect(cookie).toMatch(/^okuri_sid=[A-Za-z0-9_-]{43}; Path=\/; Max-Age=\d+; HttpOnly; SameSite=Lax$/);
+    await close?.();
+    const secure = await start({ settings: loadSettings({ PUBLIC_BASE_URL: "https://okuri.example.invalid" }) });
+    expect((await secure.get("/api/proposals")).headers.get("set-cookie")).toMatch(/; Secure$/);
+  });
+
+  it("keeps the cookie once set and ignores malformed ones", async () => {
+    const { get, cookie, base } = await start();
+    await get("/api/proposals");
+    const first = cookie();
+    expect((await get("/api/proposals")).headers.get("set-cookie")).toBeNull();
+    expect(cookie()).toBe(first);
+    const forged = await fetch(`${base}/api/proposals`, { headers: { Cookie: "okuri_sid=short" } });
+    expect(forged.headers.get("set-cookie")).toMatch(/^okuri_sid=/);
+  });
+
+  it("proposals belong to the session that created them: others cannot list, approve or reject them", async () => {
+    const pp = sandbox();
+    const { post, get, other } = await start({ paypalConfig: FAKE_CONFIG, paypal: pp.client, settings: loadSettings(BUYERS) });
+    const mine = (await post("/api/invoices/prepare", { listing: LISTING, buyer: { alias: "Demo buyer 1" } })).body.data.proposal;
+    const intruder = other();
+    expect((await intruder.get("/api/proposals")).body.data).toEqual([]);
+    expect((await intruder.post(`/api/proposals/${mine.id}/approve`)).status).toBe(404);
+    expect((await intruder.post(`/api/proposals/${mine.id}/reject`)).status).toBe(404);
+    expect(pp.calls.filter(WRITE)).toHaveLength(0);
+    expect((await get("/api/proposals")).body.data.map((p: any) => [p.id, p.status])).toEqual([[mine.id, "pending"]]);
+    expect((await post(`/api/proposals/${mine.id}/approve`)).body.data.status).toBe("executed");
+  });
+
+  it("invoices and payment links only go to configured demo buyers, chosen by alias", async () => {
+    const pp = sandbox();
+    const { post, get } = await start({ paypalConfig: FAKE_CONFIG, paypal: pp.client, settings: loadSettings(BUYERS) });
+    const byEmail = await post("/api/invoices/prepare", { listing: LISTING, buyer: { email: fakeEmail("stranger") } });
+    expect(byEmail.status).toBe(400);
+    const unknown = await post("/api/invoices/prepare", { listing: LISTING, buyer: { alias: "Demo buyer 9" } });
+    expect(unknown.status).toBe(400);
+    expect(unknown.body.error).toMatchObject({ code: "unknown_buyer", buyers: ["Demo buyer 1", "Demo buyer 2"] });
+    expect((await get("/api/proposals")).body.data).toEqual([]);
+    const health = (await get("/api/health")).body.data;
+    expect(health.demo.notice).toBe("Demo mode: you act as the seller of a shared PayPal sandbox account.");
+    expect(health.demo.buyers).toEqual([
+      { alias: "Demo buyer 1", email: "b***@example.com" },
+      { alias: "Demo buyer 2", email: "b***@example.com" },
+    ]);
+  });
+
+  it("without DEMO_BUYER_EMAILS nothing can be billed", async () => {
+    const pp = sandbox();
+    const { post } = await start({ paypalConfig: FAKE_CONFIG, paypal: pp.client });
+    expect((await post("/api/invoices/prepare", { listing: LISTING, buyer: { alias: "Demo buyer 1" } })).body.error.code).toBe("no_demo_buyers");
+    expect((await post("/api/demo/seed")).body.error.code).toBe("no_demo_buyers");
   });
 });
 
@@ -281,12 +342,12 @@ describe("client address behind a proxy (TRUST_PROXY_HOPS)", () => {
 describe("money validation over HTTP", () => {
   it("rejects a JPY amount with decimals before creating a proposal", async () => {
     const pp = sandbox();
-    const { post, get } = await start({ paypalConfig: FAKE_CONFIG, paypal: pp.client, settings: loadSettings({ PAYMENT_PATH: "order" }) });
-    const bad = await post("/api/invoices/prepare", { listing: { ...LISTING, price: { currency_code: "JPY", value: "100.50" } } });
+    const { post, get } = await start({ paypalConfig: FAKE_CONFIG, paypal: pp.client, settings: loadSettings({ ...BUYERS, PAYMENT_PATH: "order" }) });
+    const bad = await post("/api/invoices/prepare", { listing: { ...LISTING, price: { currency_code: "JPY", value: "100.50" } }, buyer: { alias: "Demo buyer 1" } });
     expect(bad.status).toBe(400);
     expect(bad.body.error.issues.join(" ")).toMatch(/listing\.price\.value: JPY has no decimals/);
     expect((await get("/api/proposals")).body.data).toEqual([]);
-    const good = await post("/api/invoices/prepare", { listing: { ...LISTING, price: { currency_code: "JPY", value: "12000" } } });
+    const good = await post("/api/invoices/prepare", { listing: { ...LISTING, price: { currency_code: "JPY", value: "12000" } }, buyer: { alias: "Demo buyer 1" } });
     expect(good.body.data.proposal.payload.order.purchase_units[0].amount.value).toBe("12000");
     expect(good.body.data.proposal.title).toMatch(/JPY 12000/);
   });

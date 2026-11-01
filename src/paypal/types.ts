@@ -156,6 +156,8 @@ export interface CreateOrderRequest {
   }>;
   payment_source?: {
     paypal?: {
+      /** `paypal_wallet.email_address`: "The email address of the PayPal account holder." */
+      email_address?: string;
       experience_context?: {
         brand_name?: string;
         locale?: string;

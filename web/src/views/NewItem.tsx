@@ -31,7 +31,7 @@ export function NewItemView({ health, onProposal }: { health: Health; onProposal
   const [samples, setSamples] = useState<Array<{ key: string; item: JpItem }>>([]);
   const [item, setItem] = useState<JpItem>(EMPTY);
   const [listing, setListing] = useState<Listing | null>(null);
-  const [buyerEmail, setBuyerEmail] = useState("");
+  const [buyer, setBuyer] = useState(health.demo.buyers[0]?.alias ?? "");
   const [price, setPrice] = useState({ currency_code: "USD", value: "" });
   const [prepared, setPrepared] = useState<Prepared | null>(null);
 
@@ -49,7 +49,7 @@ export function NewItemView({ health, onProposal }: { health: Health; onProposal
     if (!listing) return;
     const p = await api.post<Prepared>("/api/invoices/prepare", {
       listing: { title: listing.title.slice(0, 127), description: listing.description.slice(0, 1000), price, quantity: 1 },
-      ...(health.paymentPath === "invoice" ? { buyer: { email: buyerEmail } } : {}),
+      buyer: { alias: buyer },
     });
     setPrepared(p);
     onProposal();
@@ -109,12 +109,13 @@ export function NewItemView({ health, onProposal }: { health: Health; onProposal
 
           <h3>Bill a buyer with PayPal ({health.paymentPath === "invoice" ? "invoice" : "payment link"})</h3>
           <div className="row">
-            {health.paymentPath === "invoice" && (
-              <div>
-                <label>Buyer email (PayPal sandbox account)</label>
-                <input type="email" value={buyerEmail} onChange={(e) => setBuyerEmail(e.target.value)} />
-              </div>
-            )}
+            <div>
+              <label>Buyer (PayPal sandbox demo buyer)</label>
+              <select value={buyer} onChange={(e) => setBuyer(e.target.value)}>
+                {health.demo.buyers.length === 0 && <option value="">No demo buyers configured (DEMO_BUYER_EMAILS)</option>}
+                {health.demo.buyers.map((b) => <option key={b.alias} value={b.alias}>{b.alias} ({b.email})</option>)}
+              </select>
+            </div>
             <div>
               <label>Currency (PayPal code; JPY, HUF, TWD: whole numbers only)</label>
               <input value={price.currency_code} maxLength={3} onChange={(e) => setPrice({ ...price, currency_code: e.target.value.toUpperCase() })} />
@@ -124,7 +125,7 @@ export function NewItemView({ health, onProposal }: { health: Health; onProposal
               <input value={price.value} onChange={(e) => setPrice({ ...price, value: e.target.value })} />
             </div>
           </div>
-          <button className="primary" disabled={prepare.busy || (health.paymentPath === "invoice" && !buyerEmail)} onClick={() => void prepare.run()}>
+          <button className="primary" disabled={prepare.busy || !buyer} onClick={() => void prepare.run()}>
             {prepare.busy ? "Preparing…" : health.paymentPath === "invoice" ? "Prepare invoice for approval" : "Prepare payment link for approval"}
           </button>
           <ErrorBox error={prepare.error} />

@@ -4,6 +4,7 @@ import { ListingForSaleSchema, SellerMoneySchema } from "../src/agent/schemas.js
 import { buildInvoicePayload, buildOrderPayload } from "../src/agent/tasks.js";
 import { agentTools } from "../src/agent/tools.js";
 import { decimalsFor, formatMinor, MoneyError, moneyProblem, multiplyMinor, normalizeAmount, showMoney, toMinor, usdFromJpy } from "../src/money.js";
+import { DemoBuyers } from "../src/demo/buyers.js";
 import { ProposalStore } from "../src/proposals/store.js";
 import { fakeEmail } from "./helpers/fake-fetch.js";
 
@@ -57,24 +58,25 @@ describe("seller prices are validated before any proposal exists", () => {
   });
 
   it("order and invoice payloads use the currency's precision", () => {
-    const jpy = buildOrderPayload({ title: "Tea bowl", description: "", price: { currency_code: "JPY", value: "12000" }, quantity: 2 }, { publicBaseUrl: "https://demo.invalid" });
+    const jpy = buildOrderPayload({ title: "Tea bowl", description: "", price: { currency_code: "JPY", value: "12000" }, quantity: 2 }, "Demo buyer 1", { publicBaseUrl: "https://demo.invalid" });
     const unit = jpy.order.purchase_units[0]!;
     expect(unit.amount).toEqual({ currency_code: "JPY", value: "24000", breakdown: { item_total: { currency_code: "JPY", value: "24000" } } });
     expect(unit.items![0]!.unit_amount).toEqual({ currency_code: "JPY", value: "12000" });
 
-    const usd = buildOrderPayload({ title: "Tea bowl", description: "", price: { currency_code: "USD", value: "19.99" }, quantity: 3 }, { publicBaseUrl: "https://demo.invalid" });
+    const usd = buildOrderPayload({ title: "Tea bowl", description: "", price: { currency_code: "USD", value: "19.99" }, quantity: 3 }, "Demo buyer 1", { publicBaseUrl: "https://demo.invalid" });
     expect(usd.order.purchase_units[0]!.amount.value).toBe("59.97");
 
-    const inv = buildInvoicePayload({ title: "Tea bowl", description: "", price: { currency_code: "USD", value: "80" }, quantity: 1 }, { email: fakeEmail("b") }, { subject: "s", note: "n" });
+    const inv = buildInvoicePayload({ title: "Tea bowl", description: "", price: { currency_code: "USD", value: "80" }, quantity: 1 }, "Demo buyer 1", { subject: "s", note: "n" });
     expect(inv.invoice.items[0]!.unit_amount).toEqual({ currency_code: "USD", value: "80.00" });
-    expect(() => buildOrderPayload({ title: "x", description: "", price: { currency_code: "JPY", value: "100.50" }, quantity: 1 }, { publicBaseUrl: "https://demo.invalid" })).toThrow(MoneyError);
+    expect(() => buildOrderPayload({ title: "x", description: "", price: { currency_code: "JPY", value: "100.50" }, quantity: 1 }, "Demo buyer 1", { publicBaseUrl: "https://demo.invalid" })).toThrow(MoneyError);
   });
 
   it("chat sale tools validate the price and still have a JSON schema for the model", () => {
-    const tools = agentTools({ paypal: undefined, proposals: new ProposalStore(async () => undefined), agentConfig: { fxJpyPerUsd: 150, maxOutputTokens: 500, publicBaseUrl: "https://demo.invalid" }, paymentPath: "order" });
+    const tools = agentTools({ paypal: undefined, proposals: new ProposalStore(async () => undefined), agentConfig: { fxJpyPerUsd: 150, maxOutputTokens: 500, publicBaseUrl: "https://demo.invalid" }, paymentPath: "order", sessionId: "s", buyers: new DemoBuyers([fakeEmail("b1")]) });
     const createOrder = tools.find((t) => t.name === "create_order")!;
-    expect(() => createOrder.inputSchema.parse({ item_title: "Tea bowl", price: { currency_code: "JPY", value: "100.50" }, subject: "Payment", note: "Thanks for your order!" })).toThrow();
+    expect(() => createOrder.inputSchema.parse({ buyer: "Demo buyer 1", item_title: "Tea bowl", price: { currency_code: "JPY", value: "100.50" }, subject: "Payment", note: "Thanks for your order!" })).toThrow();
     const json = z.toJSONSchema(createOrder.inputSchema, { io: "input" }) as { properties: Record<string, { properties?: Record<string, unknown> }> };
     expect(Object.keys(json.properties.price!.properties!)).toEqual(["currency_code", "value"]);
+    expect(createOrder.inputSchema.safeParse({ buyer: "Demo buyer 1", item_title: "Tea bowl", price: { currency_code: "JPY", value: "12000" }, subject: "Payment", note: "Thanks for your order!" }).success).toBe(true);
   });
 });

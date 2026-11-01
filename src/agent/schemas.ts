@@ -45,8 +45,9 @@ export const ListingForSaleSchema = z.object({
 });
 export type ListingForSale = z.infer<typeof ListingForSaleSchema>;
 
+/** A buyer is chosen by demo alias ("Demo buyer 1"), never by email address. */
 export const BuyerSchema = z.object({
-  email: z.email().max(254),
+  alias: z.string().trim().min(1).max(40),
 });
 export type Buyer = z.infer<typeof BuyerSchema>;
 
