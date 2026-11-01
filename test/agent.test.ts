@@ -240,6 +240,20 @@ describe("free chat with tools", () => {
     expect(proposals.list({ owner: "someone-else" })).toEqual([]);
   });
 
+  it("tool results are redacted before the model sees them (F7)", async () => {
+    const { client } = paypalWith((c) =>
+      c.url.includes("/v1/customer/disputes/PP-D-1")
+        ? { json: { dispute_id: "PP-D-1", messages: [{ posted_by: "BUYER", content: `Call me: 090-1234-5678, ${fakeEmail("buyer")}` }] } }
+        : undefined,
+    );
+    const proposals = new ProposalStore(async () => undefined);
+    // The fake "model" echoes the tool output it was given.
+    const ai = new FakeAiProvider([{ text: "", toolCalls: [{ name: "get_dispute", input: { dispute_id: "PP-D-1" } }], after: (calls) => JSON.stringify(calls[0]!.output) }]);
+    const res = await chat(ai, { ...TOOL_BASE, paypal: client, proposals, agentConfig: CONFIG, paymentPath: "invoice" }, [{ role: "user", content: "show PP-D-1" }], 500);
+    expect(res.reply).toContain("Call me: [phone removed], [email removed]");
+    expect(res.reply).not.toContain("090-1234-5678");
+  });
+
   it("limit refusals come back to the model as tool errors (no proposal, no crash)", async () => {
     const { LimitError } = await import("../src/limits/limits.js");
     const proposals = new ProposalStore(async () => undefined);

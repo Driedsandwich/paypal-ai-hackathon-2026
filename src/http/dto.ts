@@ -6,6 +6,7 @@ import type { DemoBuyers } from "../demo/buyers.js";
 import type { Dispute, DisputeSummary, Invoice, Money, OrderResponse } from "../paypal/types.js";
 import { disputeActions } from "../paypal/dispute-actions.js";
 import { maskEmail } from "../privacy/mask.js";
+import { redactPersonalData } from "../privacy/redact.js";
 import type { Proposal } from "../proposals/store.js";
 
 const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g;
@@ -97,7 +98,7 @@ export function disputeRow(d: DisputeSummary) {
   };
 }
 
-/** One dispute: summary, transaction ids, messages (emails masked) and what PayPal allows now. */
+/** One dispute: summary, transaction ids, messages (contact details redacted) and what PayPal allows now. */
 export function disputeDetail(d: Dispute) {
   return {
     ...disputeRow(d),
@@ -108,7 +109,7 @@ export function disputeDetail(d: Dispute) {
       invoice_number: t.invoice_number,
       gross_amount: money(t.gross_amount),
     })),
-    messages: (d.messages ?? []).slice(-30).map((m) => ({ posted_by: m.posted_by, time_posted: m.time_posted, content: (m.content ?? "").slice(0, 2000) })),
+    messages: (d.messages ?? []).slice(-30).map((m) => ({ posted_by: m.posted_by, time_posted: m.time_posted, content: redactPersonalData((m.content ?? "").slice(0, 2000)) })),
   };
 }
 

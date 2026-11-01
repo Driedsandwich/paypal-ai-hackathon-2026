@@ -202,10 +202,17 @@ The agent has four typed tasks and a chat entry point:
    approved action sends PayPal's standard reminder; PayPal ignores custom reminder text.
 4. **disputeEvidencePack**: summary, timeline, reply draft and evidence notes from PayPal's
    dispute data plus the seller's facts. A fact check flags any date, amount, tracking number
-   or id that is not in the inputs. Buyer names and emails are not sent to the model.
+   or id that is not in the inputs.
 5. **Chat**: the model can call tools named like PayPal's agent toolkit (`list_invoices`,
    `get_dispute`, `send_invoice_reminder`, `create_shipment_tracking`, …). Read tools run;
    tools that would change something only create proposals.
+
+**What the model sees.** Item text, listing text, invoice numbers, dates, amounts and item
+names, dispute metadata, and free text (dispute messages, seller notes, chat messages and tool
+results) **after redaction**: email addresses, phone numbers and street-address-like lines are
+replaced by placeholders such as `[phone removed]` before any model call. Buyer email
+addresses from PayPal records are never sent, and the chat agent picks buyers by alias (*Demo
+buyer 1*). The redaction is pattern-based: names and unusual formats can slip through.
 
 Every model answer must be JSON matching a schema (validated with zod, one retry). The
 seller approves every action that reaches PayPal or a buyer. AI routes have a per-address

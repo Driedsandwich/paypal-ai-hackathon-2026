@@ -5,6 +5,8 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { loadSettings } from "../src/config.js";
 import type { AppOptions } from "../src/server.js";
+import { FakeAiProvider } from "../src/ai/index.js";
+import { offlineReply } from "../src/ai/offline.js";
 import { FAKE_CONFIG, fakeEmail, type RecordedCall } from "./helpers/fake-fetch.js";
 import { startApp, visitor } from "./helpers/http.js";
 import { paypalError, paypalWith, SANDBOX } from "./helpers/paypal.js";
@@ -451,6 +453,51 @@ describe("reminders (F10)", () => {
   });
 });
 
+describe("personal data sent to the model (F7)", () => {
+  const PHONE = "090-1234-5678";
+  const STREET = "123 Main Street, Apt 4B";
+
+  it("dispute messages and seller notes are redacted before the evidence-pack call", async () => {
+    const pp = sandbox((c) =>
+      c.url === `${SANDBOX}/v1/customer/disputes/PP-D-7`
+        ? {
+            json: {
+              dispute_id: "PP-D-7",
+              dispute_life_cycle_stage: "INQUIRY",
+              messages: [{ posted_by: "BUYER", content: `Where is it? Mail ${fakeEmail("angry.buyer")} or call ${PHONE}.\n${STREET}\nSpringfield, IL 62704` }],
+              links: disputeLinks("PP-D-7", ["send-message"]),
+            },
+          }
+        : undefined,
+    );
+    const ai = new FakeAiProvider([offlineReply], { record: true });
+    const { post } = await start({ paypalConfig: FAKE_CONFIG, paypal: pp.client, ai });
+    const res = await post("/api/disputes/PP-D-7/evidence-pack", { tracking: { carrier: "Yamato", tracking_number: "1234-5678-9012" }, seller_notes: `Buyer phone ${PHONE}, shipped to ${STREET}` });
+    expect(res.status).toBe(200);
+    const sent = JSON.stringify(ai.calls.map((c) => c.messages));
+    for (const secret of [fakeEmail("angry.buyer"), PHONE, "Main Street", "62704"]) expect(sent).not.toContain(secret);
+    expect(sent).toContain("[email removed]");
+    expect(sent).toContain("[phone removed]");
+    expect(sent).toContain("1234-5678-9012"); // structured tracking survives
+    expect(res.body.data.pack.reply_draft).toContain("1234-5678-9012");
+  });
+
+  it("chat messages and tool results are redacted before they reach the model", async () => {
+    const pp = sandbox((c) =>
+      c.url.includes("/v1/customer/disputes?") ? { json: { items: [{ dispute_id: "PP-D-8", reason: `Buyer says call ${PHONE}`, status: "OPEN" }] } } : undefined,
+    );
+    const ai = new FakeAiProvider([offlineReply], { record: true });
+    const { post } = await start({ paypalConfig: FAKE_CONFIG, paypal: pp.client, ai });
+    const res = await post("/api/chat", { messages: [{ role: "user", content: `show disputes; my buyer is ${fakeEmail("x.y")} at ${PHONE}` }] });
+    expect(res.status).toBe(200);
+    const sent = JSON.stringify(ai.calls.map((c) => c.messages));
+    expect(sent).not.toContain(fakeEmail("x.y"));
+    expect(sent).not.toContain(PHONE);
+    // The tool result the model sees is redacted too (offline reply quotes it back).
+    expect(res.body.data.reply).not.toContain(PHONE);
+  });
+});
+
 describe("public data (F3)", () => {
   const SECRET_NOTE = "private memo";
   /** A sandbox whose records carry contact details the public must not see. */
@@ -485,7 +532,7 @@ describe("public data (F3)", () => {
     const one = await get("/api/invoices/INV2-A001");
     expect(one.body.data).toMatchObject({ id: "INV2-A001", recipient: "Demo buyer 1", items: [] });
     const dispute = await get("/api/disputes/PP-D-9");
-    expect(dispute.body.data.messages[0].content).toBe("Please mail me at o***@example.com");
+    expect(dispute.body.data.messages[0].content).toBe("Please mail me at [email removed]");
     expect(dispute.body.data.buyer).toBeUndefined();
 
     for (const body of [list.body, one.body, dispute.body]) {

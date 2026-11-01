@@ -53,8 +53,17 @@ open, or where the spec's preferred option did not work. Newest pass last.
 7. **Fact check for dispute texts:** dates, money amounts, UPU tracking numbers and PayPal-style
    ids in AI text that do not appear in the inputs are listed as `unverified_facts` and shown
    in red. Text is not changed automatically; the seller decides.
-8. **Personal data to the model:** buyer emails and names are not sent. Dispute messages from
-   the buyer are sent (needed for a reply); the output still needs seller approval.
+8. **Personal data to the model** (revised in pass 2a, F7). The real boundary: structured buyer
+   identity from PayPal records (emails, names, addresses) is never put into prompts, and the
+   chat tools take a buyer alias, never an email. Free text *is* sent, because the tasks need
+   it: dispute messages, seller notes, item descriptions, chat messages and tool results. Before
+   any model call that free text goes through a pattern-based redactor
+   (`src/privacy/redact.ts`) that replaces email addresses, phone numbers (international,
+   Japanese and North American formats, full-width digits, "phone:/電話" prefixes) and
+   street-address-like lines (house number + street word, Apt/Suite/PO Box, US ZIP and UK
+   postcodes, 〒 and 都道府県…丁目/番地 patterns) with placeholders. Structured fields
+   (tracking numbers, ids, amounts) are left alone so the evidence pack still works. Names and
+   unusual formats are not detected; the model's output still needs seller approval.
 9. **Offline `fake` provider** is rule-based (a small Japanese→English glossary, material and
    HS-code hints) and labels its text "[offline demo]". It drives all tests and keyless demos.
 10. **Rate limits are in memory** (per process): per client address (socket address, or the

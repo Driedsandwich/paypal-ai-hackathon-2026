@@ -5,6 +5,7 @@ import { allowedActionList, disputeActions, type DisputeAction } from "../paypal
 import type { PayPalClient } from "../paypal/client.js";
 import type { Invoice } from "../paypal/types.js";
 import type { DemoBuyers } from "../demo/buyers.js";
+import { redactDeep, redactPersonalData } from "../privacy/redact.js";
 import { LimitError } from "../limits/limits.js";
 import type { PayPalReadCache } from "../paypal/read-cache.js";
 import type { ReminderLedger } from "../proposals/reminder-ledger.js";
@@ -254,10 +255,13 @@ export const ChatInputSchema = z.object({
 
 export async function chat(ai: AiProvider, deps: ToolDeps, messages: AiMessage[], maxTokens: number) {
   const before = new Set(deps.proposals.list({ owner: deps.sessionId }).map((p) => p.id));
+  // Chat text and tool results are redacted before they reach the model (F7).
+  const redacted = messages.map((m) => ({ ...m, content: redactPersonalData(m.content) }));
+  const tools = agentTools(deps).map((t) => ({ ...t, execute: async (input: unknown) => redactDeep(await t.execute(input)) }));
   const result = await ai.complete({
     task: "chat",
-    messages: [{ role: "system", content: CHAT_SYSTEM }, ...messages],
-    tools: agentTools(deps),
+    messages: [{ role: "system", content: CHAT_SYSTEM }, ...redacted],
+    tools,
     maxTokens,
     maxSteps: 5,
   });

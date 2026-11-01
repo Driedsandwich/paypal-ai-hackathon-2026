@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { AiMessage, AiProvider } from "../ai/provider.js";
+import { redactDeep } from "../privacy/redact.js";
 
 export class AgentOutputError extends Error {
   constructor(
@@ -45,13 +46,16 @@ export async function runJsonTask<S extends z.ZodType>(
   opts: JsonTaskOptions<S>,
 ): Promise<{ value: z.infer<S>; provider: string; model?: string }> {
   const jsonSchema = JSON.stringify(z.toJSONSchema(opts.schema));
+  // Free text (item descriptions, dispute messages, seller notes) is redacted before it
+  // reaches the model: email addresses, phone numbers, street-address-like lines (F7).
+  const input = redactDeep(opts.input);
   const messages: AiMessage[] = [
     { role: "system", content: opts.system },
     {
       role: "user",
       content: [
         "Task input (JSON):",
-        `<input>\n${JSON.stringify(opts.input)}\n</input>`,
+        `<input>\n${JSON.stringify(input)}\n</input>`,
         "Reply with only one JSON object that matches this JSON Schema, no prose:",
         jsonSchema,
       ].join("\n"),
