@@ -156,6 +156,16 @@ describe("disputeEvidencePack", () => {
     expect(pack.evidence_payload.evidences[0]!.evidence_type).toBe("OTHER");
   });
 
+  it("never recommends an action PayPal does not offer now", async () => {
+    const at = (allowed: string[]) => EvidenceInputSchema.parse({ ...input, dispute: { ...input.dispute, allowed_actions: allowed } });
+    // The offline rules would pick provide_evidence (tracking and invoice given).
+    expect((await new Agent(offline(), CONFIG).disputeEvidencePack(at(["provide_evidence"]))).recommended_action).toBe("provide_evidence");
+    expect((await new Agent(offline(), CONFIG).disputeEvidencePack(at(["accept_claim"]))).recommended_action).toBe("needs_seller_input");
+    const none = await new Agent(offline(), CONFIG).disputeEvidencePack(at([]));
+    expect(none.recommended_action).toBe("wait_for_paypal");
+    expect(none.reply_draft).toContain("EJ123456789JP");
+  });
+
   it("flags facts the model made up", async () => {
     const liar = new FakeAiProvider([
       JSON.stringify({

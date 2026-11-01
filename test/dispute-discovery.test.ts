@@ -31,6 +31,7 @@ function lagging(state: { listed: boolean; dispute: Dispute | undefined; listFai
   return paypalWith((c: RecordedCall) => {
     const u = c.url.replace(SANDBOX, "");
     if (u.startsWith("/v2/invoicing/invoices?")) return { json: { items: state.invoices ?? [MARKED_INVOICE] } };
+    if (u === `/v2/invoicing/invoices/${MARKED_INVOICE.id}`) return { json: MARKED_INVOICE };
     if (u.startsWith("/v1/customer/disputes?")) {
       if (state.listFails) return { status: 500, json: paypalError("INTERNAL_SERVER_ERROR", "dbg-list") };
       // The list item: summary fields only (no transactions, no messages).
@@ -391,5 +392,43 @@ describe("dispute discovery: Open a case by ID", () => {
     expect(opened.body.data.sale_id).toMatch(/^OK-/);
     expect(disputes.size).toBe(0);
     expect((await app.other().post("/api/disputes/open", { dispute_id: id })).status).toBe(404);
+  });
+});
+
+describe("no seller action at PayPal (links hold only 'self')", () => {
+  it("states it clearly; the evidence pack and reply draft stay available read-only; no proposals", async () => {
+    const pp = lagging({ listed: false, dispute: FIXTURE });
+    const app = await start({ settings: LIVE, paypalConfig: FAKE_CONFIG, paypal: pp.client });
+    await app.get("/api/journeys");
+    const opened = (await app.post("/api/disputes/open", { dispute_id: CASE_ID })).body.data;
+    expect(opened).toMatchObject({ seller_action_available: false, notice: "PayPal is reviewing this case. No seller action is available right now." });
+    expect(Object.values(opened.allowed_actions).every((v: any) => v.allowed === false)).toBe(true);
+    expect((await app.get(`/api/disputes/${CASE_ID}`)).body.data).toMatchObject({ seller_action_available: false, notice: expect.stringMatching(/^PayPal is reviewing this case/) });
+
+    // The journey branch says so too (the case was just read by id).
+    const journey = (await app.get("/api/journeys")).body.data.journeys.find((j: any) => j.id === "OK-2042");
+    expect(journey.dispute).toMatchObject({ dispute_id: CASE_ID, seller_action_available: false, notice: expect.stringMatching(/No seller action/) });
+
+    // Evidence pack: summary, English reply draft and evidence notes, but nothing to approve.
+    const pack = await app.post(`/api/disputes/${CASE_ID}/evidence-pack`, { invoice_id: "INV2-FIXTURE", tracking: { carrier: "Japan Post", tracking_number: "EJ123456789JP" } });
+    expect(pack.status).toBe(200);
+    expect(pack.body.data).toMatchObject({ proposals: {}, seller_action_available: false, notice: expect.stringMatching(/PayPal is reviewing/) });
+    expect(pack.body.data.pack.reply_draft).toMatch(/EJ123456789JP/);
+    expect(pack.body.data.pack.evidence_notes).toBeTruthy();
+    expect(pack.body.data.pack.recommended_action).toBe("wait_for_paypal");
+    expect(pack.body.data.allowed_actions.send_message.reason).toMatch(/does not offer sending a message/);
+    const accept = await app.post(`/api/disputes/${CASE_ID}/accept-claim`, { note: "Refund" });
+    expect(accept.status).toBe(409);
+    expect((await app.get("/api/proposals")).body.data).toEqual([]);
+    expect(pp.calls.filter((c) => c.method !== "GET" && !c.url.endsWith("/v1/oauth2/token"))).toHaveLength(0);
+  });
+
+  it("other no-action states get their own sentence; offered actions get none", async () => {
+    const { sellerActionState } = await import("../src/paypal/dispute-actions.js");
+    expect(sellerActionState({ ...FIXTURE, status: "RESOLVED" })).toEqual({ seller_action_available: false, notice: "This case is closed. No seller action is available." });
+    expect(sellerActionState({ ...FIXTURE, status: "WAITING_FOR_BUYER_RESPONSE" }).notice).toMatch(/waiting for the buyer/);
+    expect(sellerActionState({ ...FIXTURE, status: "UNDER_REVIEW", dispute_life_cycle_stage: "CHARGEBACK" }).notice).toBe("PayPal is reviewing this case. No seller action is available right now.");
+    const withEvidence = { ...FIXTURE, links: [...FIXTURE.links!, { rel: "provide_evidence", method: "POST", href: `${SANDBOX}/v1/customer/disputes/${CASE_ID}/provide-evidence` }] };
+    expect(sellerActionState(withEvidence)).toEqual({ seller_action_available: true });
   });
 });

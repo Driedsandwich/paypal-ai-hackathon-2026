@@ -1,6 +1,7 @@
 import type { DemoBuyers } from "../demo/buyers.js";
 import type { Invoice, Money } from "../paypal/types.js";
 import { publicProposal } from "../http/dto.js";
+import { sellerActionState } from "../paypal/dispute-actions.js";
 import type { Proposal } from "../proposals/store.js";
 import { disputeMatchesSale, type DisputeView } from "./disputes.js";
 import { COUNTRIES, parseSaleMarker, type Sale, type SaleRegistry } from "./sales.js";
@@ -195,6 +196,8 @@ export function buildJourney(sale: Sale, ctx: JourneyContext) {
           from_step: tracked ? 4 : 3,
           /** False while PayPal's list does not return the case yet (known by webhook or by id). */
           in_paypal_list: disputeView!.inList,
+          // Only known from a read by id (list items carry no action links).
+          ...(disputeView!.detailed ? sellerActionState(dispute) : {}),
           proposals: disputeProposals.filter((p) => p.status === "pending").map((p) => publicProposal(p, ctx.buyers)),
         }
       : undefined,

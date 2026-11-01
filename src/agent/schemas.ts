@@ -127,7 +127,7 @@ export const NudgeAiSchema = z.object({
 });
 export type NudgeAi = z.infer<typeof NudgeAiSchema>;
 
-export const EVIDENCE_ACTIONS = ["provide_evidence", "send_message", "accept_claim", "needs_seller_input"] as const;
+export const EVIDENCE_ACTIONS = ["provide_evidence", "send_message", "accept_claim", "needs_seller_input", "wait_for_paypal"] as const;
 
 export const EvidencePackAiSchema = z.object({
   summary: z.string().min(10).max(1500),

@@ -103,7 +103,8 @@ If something important is missing, list it in missing_information and set recomm
 - reply_draft: a calm, polite English message to the buyer (max 2000 characters).
 - evidence_notes: notes for PayPal explaining the evidence (max 2000 characters).
 - recommended_action: provide_evidence when shipment proof exists for an item-not-received case; send_message when the case is still an inquiry; accept_claim only if the seller notes say they want to refund.
-  Only recommend an action listed in dispute.allowed_actions (what PayPal currently allows); otherwise use needs_seller_input.`;
+  Only recommend an action listed in dispute.allowed_actions (what PayPal currently allows); otherwise use needs_seller_input.
+  If dispute.allowed_actions is empty, PayPal offers the seller no action right now: use wait_for_paypal (the reply draft is still useful for later).`;
 
 export class Agent {
   constructor(
@@ -194,6 +195,13 @@ export class Agent {
       schema: EvidencePackAiSchema,
       maxTokens: this.config.maxOutputTokens,
     });
+
+    // The recommendation never names an action PayPal does not offer now (checked in code too).
+    const allowed = input.dispute.allowed_actions;
+    const PAYPAL_ACTIONS: readonly string[] = ["provide_evidence", "send_message", "accept_claim"];
+    if (allowed && PAYPAL_ACTIONS.includes(value.recommended_action) && !allowed.includes(value.recommended_action)) {
+      value.recommended_action = allowed.length === 0 ? "wait_for_paypal" : "needs_seller_input";
+    }
 
     const unverified = [
       ...new Set([

@@ -4,7 +4,7 @@
 import type { EvidencePack } from "../agent/tasks.js";
 import type { DemoBuyers } from "../demo/buyers.js";
 import type { Dispute, DisputeSummary, Invoice, Money, OrderResponse } from "../paypal/types.js";
-import { disputeActions } from "../paypal/dispute-actions.js";
+import { disputeActions, sellerActionState } from "../paypal/dispute-actions.js";
 import { maskEmail } from "../privacy/mask.js";
 import { redactPersonalData } from "../privacy/redact.js";
 import type { Proposal } from "../proposals/store.js";
@@ -104,6 +104,7 @@ export function disputeDetail(d: Dispute) {
   return {
     ...disputeRow(d),
     allowed_actions: disputeActions(d),
+    ...sellerActionState(d),
     update_time: d.update_time,
     disputed_transactions: (d.disputed_transactions ?? []).slice(0, 10).map((t) => ({
       seller_transaction_id: t.seller_transaction_id,

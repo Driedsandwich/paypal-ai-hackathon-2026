@@ -60,3 +60,21 @@ export function allowedActionList(d: Dispute): DisputeAction[] {
   const v = disputeActions(d);
   return (Object.keys(v) as DisputeAction[]).filter((a) => v[a].allowed);
 }
+
+/** Shown when PayPal offers the seller nothing to do on a case (pass 3a). */
+export const NO_SELLER_ACTION_NOTICE = "PayPal is reviewing this case. No seller action is available right now.";
+
+/**
+ * Whether PayPal offers the seller any action now, and if not, a sentence saying so. The AI
+ * evidence pack and the English reply draft stay available read-only in that state.
+ */
+export function sellerActionState(d: Dispute): { seller_action_available: boolean; notice?: string } {
+  if (allowedActionList(d).length > 0) return { seller_action_available: true };
+  const notice =
+    d.status === "RESOLVED"
+      ? "This case is closed. No seller action is available."
+      : d.status === "WAITING_FOR_BUYER_RESPONSE"
+        ? "PayPal is waiting for the buyer's response. No seller action is available right now."
+        : NO_SELLER_ACTION_NOTICE;
+  return { seller_action_available: false, notice };
+}

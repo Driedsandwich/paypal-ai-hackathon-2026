@@ -13,7 +13,7 @@ import { writeCost, type DemoLimits } from "../limits/demo-limits.js";
 import type { PayPalReadCache } from "../paypal/read-cache.js";
 import { showMoney } from "../money.js";
 import { carrierFor } from "../paypal/carriers.js";
-import { allowedActionList, disputeActions } from "../paypal/dispute-actions.js";
+import { allowedActionList, disputeActions, sellerActionState } from "../paypal/dispute-actions.js";
 import type { PayPalApi, OfflinePayPal } from "../paypal/offline.js";
 import type { PayPalConfig } from "../paypal/config.js";
 import type { Invoice } from "../paypal/types.js";
@@ -568,7 +568,8 @@ const ROUTES: Route[] = [
           : {}),
         ...(allowed.send_message.allowed ? { send_message: publicProposal(ctx, propose(ctx, "send_dispute_message", `Send reply to buyer in dispute ${d.dispute_id}`, pack.message_payload, undefined, saleId)) } : {}),
       };
-      ok(res, { pack: publicPack(pack), proposals, allowed_actions: allowed });
+      // No seller action at PayPal: the pack and the reply draft are still returned, read-only.
+      ok(res, { pack: publicPack(pack), proposals, allowed_actions: allowed, ...sellerActionState(d) });
     },
   },
   {
