@@ -151,7 +151,7 @@ export interface CreateOrderRequest {
     description?: string;
     custom_id?: string;
     invoice_id?: string;
-    amount: { currency_code: string; value: string };
+    amount: { currency_code: string; value: string; breakdown?: { item_total?: Money; shipping?: Money } };
     items?: Array<{ name: string; quantity: string; unit_amount: Money; description?: string; category?: string }>;
   }>;
   payment_source?: {

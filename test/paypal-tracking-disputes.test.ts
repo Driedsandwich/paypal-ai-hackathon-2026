@@ -10,6 +10,8 @@ describe("carrier mapping", () => {
     expect(carrierFor("Yamato", "orders")).toEqual({ carrier: "YAMATO" });
     expect(carrierFor("クロネコ", "shipping")).toEqual({ carrier: "JP_KURO_NEKO_YAMATO_UNYUU" });
     expect(carrierFor("Sagawa", "shipping")).toEqual({ carrier: "JPN_SAGAWA" });
+    expect(carrierFor("ヤマト運輸", "disputes")).toEqual({ carrier: "JPN_YAMATO" });
+    expect(carrierFor("Japan Post", "disputes")).toEqual({ carrier: "JPN_JAPAN_POST" });
     expect(carrierFor("FedEx", "orders")).toEqual({ carrier: "FEDEX" });
     expect(carrierFor("Local courier", "orders")).toEqual({ carrier: "OTHER", carrier_name_other: "Local courier" });
     expect(() => carrierFor("  ", "orders")).toThrow();

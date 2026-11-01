@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { createAiProviderFromEnv, FakeAiProvider, HttpAiProvider, type AiProvider } from "../src/ai/index.js";
+import { MockLanguageModelV3 } from "ai/test";
+import { z } from "zod";
+import { AiSdkProvider, createAiProviderFromEnv, DEFAULT_MODELS, FakeAiProvider, type AiProvider } from "../src/ai/index.js";
 
 /** Example caller written only against the interface. */
 async function summarize(ai: AiProvider, text: string): Promise<string> {
@@ -23,14 +25,48 @@ describe("AI provider seam", () => {
     expect(result).toEqual({ text: "echo:hi", provider: "fake" });
   });
 
-  it("selects the fake provider by default and a real-provider template otherwise", async () => {
+  it("selects the offline fake by default and real providers by name", () => {
     expect(createAiProviderFromEnv({}).name).toBe("fake");
     expect(createAiProviderFromEnv({ AI_PROVIDER: "fake" })).toBeInstanceOf(FakeAiProvider);
 
-    const real = createAiProviderFromEnv({ AI_PROVIDER: "someprovider", AI_API_KEY: "fake-key" });
-    expect(real).toBeInstanceOf(HttpAiProvider);
-    await expect(real.complete({ messages: [] })).rejects.toThrow(/not implemented/);
+    const anthropic = createAiProviderFromEnv({ AI_PROVIDER: "anthropic", AI_API_KEY: "fake-key" });
+    expect(anthropic).toBeInstanceOf(AiSdkProvider);
+    expect(anthropic.model).toBe(DEFAULT_MODELS.anthropic);
+    expect(createAiProviderFromEnv({ AI_PROVIDER: "google", AI_API_KEY: "fake-key", AI_MODEL: "custom-model" }).model).toBe("custom-model");
+    expect(createAiProviderFromEnv({ AI_PROVIDER: "OpenAI", AI_API_KEY: "fake-key" }).name).toBe("openai");
 
-    expect(() => createAiProviderFromEnv({ AI_PROVIDER: "someprovider" })).toThrow(/AI_API_KEY/);
+    expect(() => createAiProviderFromEnv({ AI_PROVIDER: "anthropic" })).toThrow(/AI_API_KEY/);
+    expect(() => createAiProviderFromEnv({ AI_PROVIDER: "someprovider", AI_API_KEY: "k" })).toThrow(/AI_PROVIDER must be one of/);
+  });
+
+  it("AI SDK provider passes system/messages/token cap and runs tools with real schemas", async () => {
+    const seen: Array<{ tools?: unknown; maxOutputTokens?: number; prompt: unknown }> = [];
+    let step = 0;
+    const usage = { inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 1, text: 1, reasoning: 0 } };
+    const model = new MockLanguageModelV3({
+      doGenerate: async (opts) => {
+        seen.push({ tools: opts.tools, maxOutputTokens: opts.maxOutputTokens, prompt: opts.prompt });
+        step += 1;
+        return step === 1
+          ? { content: [{ type: "tool-call", toolCallId: "c1", toolName: "lookup", input: JSON.stringify({ id: "INV2-1" }) }], finishReason: { unified: "tool-calls", raw: undefined }, usage, warnings: [] }
+          : { content: [{ type: "text", text: "Invoice INV2-1 is SENT." }], finishReason: { unified: "stop", raw: undefined }, usage, warnings: [] };
+      },
+    });
+    const ai = new AiSdkProvider("anthropic", "test-model", model, { maxOutputTokens: 500 });
+    const result = await ai.complete({
+      messages: [
+        { role: "system", content: "Be brief." },
+        { role: "user", content: "status?" },
+      ],
+      maxTokens: 9999,
+      tools: [{ name: "lookup", description: "Look up", inputSchema: z.object({ id: z.string() }), execute: async (i) => ({ status: "SENT", ...(i as object) }) }],
+    });
+    expect(result.text).toBe("Invoice INV2-1 is SENT.");
+    expect(result.toolCalls).toEqual([{ name: "lookup", input: { id: "INV2-1" }, output: { status: "SENT", id: "INV2-1" } }]);
+    expect(seen[0]!.maxOutputTokens).toBe(500);
+    const sentTool = (seen[0]!.tools as Array<{ name: string; inputSchema: { properties: Record<string, unknown> } }>)[0]!;
+    expect(sentTool.name).toBe("lookup");
+    expect(Object.keys(sentTool.inputSchema.properties)).toEqual(["id"]); // not the empty schema the toolkit produces
+    expect((seen[0]!.prompt as Array<{ role: string }>)[0]!.role).toBe("system");
   });
 });
