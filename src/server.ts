@@ -12,6 +12,9 @@ import { handlePayPalReturn } from "./http/paypal-return.js";
 import { serveStatic } from "./http/static.js";
 import { readBody, sendError, sendJson } from "./http/util.js";
 import { AiLimiter } from "./limits/rate-limit.js";
+import { DemoLimits } from "./limits/demo-limits.js";
+import { PayPalReadCache } from "./paypal/read-cache.js";
+import { clientAddress, limitKey } from "./http/client-address.js";
 import { PayPalApiError, PayPalClient, PayPalTimeoutError, handlePayPalWebhook, type PayPalConfig } from "./paypal/index.js";
 import { createPayPalExecutor } from "./proposals/actions.js";
 import { OrderRegistry } from "./proposals/order-registry.js";
@@ -35,6 +38,7 @@ export interface AppOptions {
   proposals?: ProposalStore;
   limiter?: AiLimiter;
   orders?: OrderRegistry;
+  limits?: DemoLimits;
   /** Directory with the built UI (index.html). */
   staticDir?: string;
   log?: (msg: string) => void;
@@ -93,6 +97,8 @@ export function buildDeps(options: AppOptions = {}): ApiDeps & { log: (msg: stri
     buyers,
     orders,
     reminders,
+    limits: options.limits ?? new DemoLimits(settings),
+    reads: new PayPalReadCache(settings.listCacheSeconds * 1000),
     log,
     staticDir: options.staticDir,
   };
@@ -119,6 +125,8 @@ export function createApp(options: AppOptions = {}): Server {
       }
       if (url.pathname === "/webhooks/paypal") {
         if (req.method !== "POST") return sendJson(res, 405, { ok: false, error: { code: "method_not_allowed", message: "Use POST" } }, { Allow: "POST" });
+        // Limit before reading the body or calling PayPal's verification API (F2).
+        deps.limits.takeWebhook(limitKey(clientAddress(req, deps.settings.trustProxyHops)));
         const rawBody = await readBody(req, MAX_WEBHOOK_BODY);
         const result = await handlePayPalWebhook(
           { headers: req.headers, rawBody },
@@ -130,7 +138,10 @@ export function createApp(options: AppOptions = {}): Server {
             },
             onEvent: (event) => {
               const logged = deps.events.record(event);
-              if (logged) deps.log(`webhook ${logged.eventType}: ${logged.summary}`);
+              if (logged) {
+                deps.reads.invalidate(); // e.g. an invoice was paid: show it on the next read
+                deps.log(`webhook ${logged.eventType}: ${logged.summary}`);
+              }
             },
             isDuplicate: (id) => deps.events.hasSeen(id),
           },
@@ -145,7 +156,7 @@ export function createApp(options: AppOptions = {}): Server {
         return sendJson(res, 404, { ok: false, error: { code: "not_found", message: "Not found" } });
       }
       if (url.pathname === "/paypal/return" || url.pathname === "/paypal/cancel") {
-        return await handlePayPalReturn(req, res, url, deps);
+        return await handlePayPalReturn(req, res, url, deps, () => deps.limits.takeRead(limitKey(clientAddress(req, deps.settings.trustProxyHops))));
       }
       return serveStatic(deps.staticDir, url.pathname, res);
     } catch (err) {

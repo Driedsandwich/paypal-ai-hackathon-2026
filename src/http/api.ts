@@ -9,6 +9,8 @@ import type { DemoBuyers } from "../demo/buyers.js";
 import { DEMO_ITEMS } from "../demo/items.js";
 import type { EventCategory, EventLog } from "../events/log.js";
 import type { AiLimiter } from "../limits/rate-limit.js";
+import { writeCost, type DemoLimits } from "../limits/demo-limits.js";
+import type { PayPalReadCache } from "../paypal/read-cache.js";
 import { showMoney } from "../money.js";
 import { carrierFor } from "../paypal/carriers.js";
 import { allowedActionList, disputeActions } from "../paypal/dispute-actions.js";
@@ -41,6 +43,10 @@ export interface ApiDeps {
   orders: OrderRegistry;
   /** At most 2 reminders per invoice per day. */
   reminders: ReminderLedger;
+  /** Limits on proposals, approvals, PayPal reads/writes, seeding and execution (F2). */
+  limits: DemoLimits;
+  /** 30-second cache for PayPal list reads. */
+  reads: PayPalReadCache;
 }
 
 /** Shown in the UI header: what a visitor can and cannot do on the public demo. */
@@ -71,6 +77,9 @@ function publicProposal(ctx: Ctx, p: Proposal) {
 
 /** Creates a proposal owned by the caller's session. */
 function propose<P>(ctx: Ctx, kind: ProposalKind, title: string, payload: P, copyForDm?: string): Proposal<P> {
+  const key = limitKey(ctx.address);
+  ctx.deps.proposals.assertRoom(1, key);
+  ctx.deps.limits.takeProposals(ctx.session, key);
   return ctx.deps.proposals.propose(kind, title, payload, { owner: ctx.session, address: limitKey(ctx.address), ...(copyForDm ? { copyForDm } : {}) });
 }
 
@@ -89,6 +98,8 @@ interface Route {
   pattern: RegExp;
   /** AI routes are rate limited and count toward the daily cap. */
   ai?: boolean;
+  /** Routes that read from PayPal count toward the per-address read limit. */
+  paypalRead?: boolean;
   handler: Handler;
 }
 
@@ -114,6 +125,14 @@ export function healthData(deps: ApiDeps) {
     ai: { provider: deps.ai.name, model: deps.ai.model ?? null },
     paymentPath: deps.settings.paymentPath,
     fxJpyPerUsd: deps.settings.fxJpyPerUsd,
+    demoLimits: {
+      windowMinutes: deps.settings.rateLimitWindowMinutes,
+      proposals: deps.settings.proposalRateLimit,
+      approvals: deps.settings.approvalRateLimit,
+      paypalReads: deps.settings.paypalReadRateLimit,
+      paypalWritesToday: deps.limits.writesToday.used(),
+      paypalDailyWriteCap: deps.settings.paypalDailyWriteCap,
+    },
     limits: {
       perIp: deps.settings.aiRateLimitPerIp,
       windowMinutes: deps.settings.aiRateLimitWindowMinutes,
@@ -213,9 +232,10 @@ const ROUTES: Route[] = [
   {
     method: "GET",
     pattern: /^\/api\/invoices$/,
+    paypalRead: true,
     handler: async ({ res, deps, query }) => {
       const page = z.coerce.number().int().min(1).max(1000).catch(1).parse(query.get("page") ?? 1);
-      const list = await requirePayPal(deps).listInvoices({ page, page_size: 20, total_required: true });
+      const list = await deps.reads.listInvoices(requirePayPal(deps), { page, page_size: 20, total_required: true });
       ok(res, { total_items: list.total_items ?? null, total_pages: list.total_pages ?? null, page, invoices: (list.items ?? []).map((inv) => invoiceRow(inv, deps.buyers)) });
     },
   },
@@ -223,10 +243,12 @@ const ROUTES: Route[] = [
     method: "POST",
     pattern: /^\/api\/invoices\/nudge$/,
     ai: true,
+    paypalRead: true,
     handler: async (ctx) => {
       const { req, res, deps } = ctx;
       const body = z.object({ invoice_ids: z.array(ID).max(20).optional() }).parse(await readJsonBody(req, MAX_API_BODY));
-      const list = await requirePayPal(deps).listInvoices({ page: 1, page_size: 50 });
+      deps.limits.checkProposals(ctx.session, limitKey(ctx.address));
+      const list = await deps.reads.listInvoices(requirePayPal(deps), { page: 1, page_size: 50 });
       const wanted = body.invoice_ids ? new Set(body.invoice_ids) : undefined;
       const now = Date.now();
       const candidates = (list.items ?? []).filter((inv) => inv.status && UNPAID.has(inv.status) && (!wanted || wanted.has(inv.id)));
@@ -245,7 +267,10 @@ const ROUTES: Route[] = [
           item_names: (inv.items ?? []).map((i) => i.name).slice(0, 20),
         }));
       const { reminders, generated_by } = await deps.agent.nudgeUnpaid(unpaid);
-      if (unpaid.length) deps.proposals.assertRoom(unpaid.length, limitKey(ctx.address));
+      if (unpaid.length) {
+        deps.proposals.assertRoom(unpaid.length, limitKey(ctx.address));
+        deps.limits.checkProposals(ctx.session, limitKey(ctx.address), unpaid.length);
+      }
       const numbers = new Map(unpaid.map((u) => [u.invoice_id, u.invoice_number]));
       const proposals = reminders.map((r) =>
         propose(ctx, "send_invoice_reminder", `Send PayPal's standard reminder for invoice ${numbers.get(r.invoice_id) ?? r.invoice_id}`, r.payload, r.copy_for_dm),
@@ -256,16 +281,19 @@ const ROUTES: Route[] = [
   {
     method: "GET",
     pattern: /^\/api\/invoices\/([A-Za-z0-9_-]+)$/,
+    paypalRead: true,
     handler: async ({ res, deps, params }) => ok(res, invoiceDetail(await requirePayPal(deps).getInvoice(params[0]!), deps.buyers)),
   },
   {
     method: "GET",
     pattern: /^\/api\/orders\/([A-Za-z0-9_-]+)$/,
+    paypalRead: true,
     handler: async ({ res, deps, params }) => ok(res, orderView(await requirePayPal(deps).getOrder(params[0]!))),
   },
   {
     method: "POST",
     pattern: /^\/api\/orders\/([A-Za-z0-9_-]+)\/capture$/,
+    paypalRead: true,
     handler: async (ctx) => {
       const { req, res, deps, params } = ctx;
       await readJsonBody(req, MAX_API_BODY);
@@ -284,6 +312,7 @@ const ROUTES: Route[] = [
   {
     method: "POST",
     pattern: /^\/api\/tracking$/,
+    paypalRead: true,
     handler: async (ctx) => {
       const { req, res, deps } = ctx;
       const body = TrackingSchema.parse(await readJsonBody(req, MAX_API_BODY));
@@ -311,24 +340,28 @@ const ROUTES: Route[] = [
   {
     method: "GET",
     pattern: /^\/api\/disputes$/,
+    paypalRead: true,
     handler: async ({ res, deps }) => {
-      const list = await requirePayPal(deps).listDisputes({ page_size: 50 });
+      const list = await deps.reads.listDisputes(requirePayPal(deps), { page_size: 50 });
       ok(res, { disputes: (list.items ?? []).map(disputeRow) });
     },
   },
   {
     method: "GET",
     pattern: /^\/api\/disputes\/([A-Za-z0-9_-]+)$/,
+    paypalRead: true,
     handler: async ({ res, deps, params }) => ok(res, disputeDetail(await requirePayPal(deps).getDispute(params[0]!))),
   },
   {
     method: "POST",
     pattern: /^\/api\/disputes\/([A-Za-z0-9_-]+)\/evidence-pack$/,
     ai: true,
+    paypalRead: true,
     handler: async (ctx) => {
       const { req, res, deps, params } = ctx;
       const body = EvidenceRequestSchema.parse(await readJsonBody(req, MAX_API_BODY));
       const paypal = requirePayPal(deps);
+      deps.limits.checkProposals(ctx.session, limitKey(ctx.address), 2);
       const d = await paypal.getDispute(params[0]!);
       const tx = d.disputed_transactions?.[0];
       const inv = body.invoice_id ? await paypal.getInvoice(body.invoice_id) : undefined;
@@ -376,6 +409,7 @@ const ROUTES: Route[] = [
   {
     method: "POST",
     pattern: /^\/api\/disputes\/([A-Za-z0-9_-]+)\/accept-claim$/,
+    paypalRead: true,
     handler: async (ctx) => {
       const { req, res, deps, params } = ctx;
       const body = z.object({ note: z.string().trim().min(1).max(2000) }).parse(await readJsonBody(req, MAX_API_BODY));
@@ -399,9 +433,26 @@ const ROUTES: Route[] = [
     handler: async (ctx) => {
       const { req, res, deps, params, session } = ctx;
       await readJsonBody(req, MAX_API_BODY); // body ignored: the stored payload is what runs
-      if (deps.proposals.get(params[0]!, session)) requirePayPal(deps);
-      const p = await deps.proposals.approve(params[0]!, session);
-      ok(res, publicProposal(ctx, p));
+      const found = deps.proposals.get(params[0]!, session);
+      if (!found || found.status !== "pending") return ok(res, publicProposal(ctx, await deps.proposals.approve(params[0]!, session))); // throws 404/409
+      requirePayPal(deps);
+      const key = limitKey(ctx.address);
+      // All checks before the first await, so they hold for this execution (F2).
+      deps.limits.checkApproval(session, key);
+      if (found.kind === "seed_demo_data") deps.limits.checkSeed(session);
+      const release = deps.limits.acquireExecution();
+      try {
+        const writes = writeCost(found.kind, found.payload);
+        deps.limits.reserveWrites(writes);
+        deps.limits.takeApproval(session, key);
+        if (found.kind === "seed_demo_data") deps.limits.takeSeed(session);
+        const p = await deps.proposals.approve(found.id, session);
+        if (p.status === "obsolete") deps.limits.refundWrites(writes); // nothing was written
+        if (p.status !== "obsolete") deps.reads.invalidate();
+        ok(res, publicProposal(ctx, p));
+      } finally {
+        release();
+      }
     },
   },
   {
@@ -429,6 +480,7 @@ const ROUTES: Route[] = [
       await readJsonBody(req, MAX_API_BODY);
       requirePayPal(deps);
       requireBuyer(deps, deps.buyers.aliases[0]);
+      deps.limits.checkSeed(ctx.session);
       const s = deps.settings;
       const listings = DEMO_ITEMS.map((d) => ({ title: d.seed.title, description: d.seed.description, price: { currency_code: "USD", value: d.seed.price_usd }, quantity: 1 }));
       let payload: SeedDemoDataPayload;
@@ -463,6 +515,9 @@ const ROUTES: Route[] = [
           address: limitKey(ctx.address),
           buyers: deps.buyers,
           reminders: deps.reminders,
+          reads: deps.reads,
+          beforePropose: () => deps.limits.takeProposals(session, limitKey(ctx.address)),
+          beforeRead: () => deps.limits.takeRead(limitKey(ctx.address)),
         },
         body.messages,
         deps.settings.aiMaxOutputTokens,
@@ -480,6 +535,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
   if (!route) throw new HttpError(405, "method_not_allowed", `Use ${matching.map((r) => r.method).join(" or ")}`, {}, { Allow: matching.map((r) => r.method).join(", ") });
   const address = clientAddress(req, deps.settings.trustProxyHops);
   const session = ensureSession(req, res, isSecureRequest(req, deps.settings.publicBaseUrl, deps.settings.trustProxyHops));
+  if (route.paypalRead && deps.paypal) deps.limits.takeRead(limitKey(address));
   if (route.ai) {
     const verdict = deps.limiter.take(limitKey(address));
     if (!verdict.ok) {

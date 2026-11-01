@@ -240,6 +240,21 @@ describe("free chat with tools", () => {
     expect(proposals.list({ owner: "someone-else" })).toEqual([]);
   });
 
+  it("limit refusals come back to the model as tool errors (no proposal, no crash)", async () => {
+    const { LimitError } = await import("../src/limits/limits.js");
+    const proposals = new ProposalStore(async () => undefined);
+    const refuse = () => {
+      throw new LimitError(429, "proposal_rate_limited", "Too many new proposals", 60);
+    };
+    const tools = agentTools({ ...TOOL_BASE, paypal: undefined, proposals, agentConfig: CONFIG, paymentPath: "invoice", beforePropose: refuse });
+    const out = await tools.find((t) => t.name === "send_invoice_reminder")!.execute({ invoice_id: "INV2-1" });
+    expect(out).toEqual({ error: "Too many new proposals" });
+    expect(proposals.list({ owner: "session-me" })).toEqual([]);
+    const { client } = paypalWith(() => ({ json: {} }));
+    const readTools = agentTools({ ...TOOL_BASE, paypal: client, proposals, agentConfig: CONFIG, paymentPath: "invoice", beforeRead: refuse });
+    expect(await readTools.find((t) => t.name === "get_invoice")!.execute({ invoice_id: "INV2-1" })).toEqual({ error: "Too many new proposals" });
+  });
+
   it("create_invoice takes a demo buyer alias, never an email address", async () => {
     const proposals = new ProposalStore(async () => undefined);
     const tool = agentTools({ ...TOOL_BASE, paypal: undefined, proposals, agentConfig: CONFIG, paymentPath: "invoice" }).find((t) => t.name === "create_invoice")!;

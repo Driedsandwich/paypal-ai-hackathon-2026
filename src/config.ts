@@ -25,6 +25,28 @@ export interface AppSettings {
   trustProxyHops: number;
   /** Concurrent in-flight API/webhook requests before new ones get 503 (MAX_CONCURRENT_REQUESTS). */
   maxConcurrentRequests: number;
+  /** Proposals created per session and per address per window (PROPOSAL_RATE_LIMIT). */
+  proposalRateLimit: number;
+  /** Approvals per session and per address per window (APPROVAL_RATE_LIMIT). */
+  approvalRateLimit: number;
+  /** Requests that read from PayPal, per address per window (PAYPAL_READ_RATE_LIMIT). */
+  paypalReadRateLimit: number;
+  /** Window for the three limits above (RATE_LIMIT_WINDOW_MINUTES). */
+  rateLimitWindowMinutes: number;
+  /** PayPal write calls per UTC day, whole server (PAYPAL_DAILY_WRITE_CAP). */
+  paypalDailyWriteCap: number;
+  /** Seconds a PayPal list read (invoices, disputes) is cached (LIST_CACHE_SECONDS). */
+  listCacheSeconds: number;
+  /** Webhook requests per address per minute (WEBHOOK_RATE_LIMIT). */
+  webhookRateLimit: number;
+  /** Webhook requests per minute, whole server (WEBHOOK_GLOBAL_RATE_LIMIT). */
+  webhookGlobalRateLimit: number;
+  /** A session may seed demo data once per this many minutes (SEED_SESSION_INTERVAL_MINUTES). */
+  seedSessionIntervalMinutes: number;
+  /** Demo-data seeds per UTC day, whole server (SEED_DAILY_CAP). */
+  seedDailyCap: number;
+  /** Approved actions running at the same time (EXECUTION_CONCURRENCY). */
+  executionConcurrency: number;
 }
 
 function num(env: NodeJS.ProcessEnv, name: string, fallback: number, min: number, max: number, integer = false): number {
@@ -69,6 +91,17 @@ export function loadSettings(env: NodeJS.ProcessEnv = process.env): AppSettings 
     agStudioLicensed: (env.AG_STUDIO_LICENSE ?? "").trim() !== "",
     trustProxyHops: num(env, "TRUST_PROXY_HOPS", 0, 0, 10, true),
     maxConcurrentRequests: num(env, "MAX_CONCURRENT_REQUESTS", 20, 1, 10_000, true),
+    proposalRateLimit: num(env, "PROPOSAL_RATE_LIMIT", 20, 1, 10_000, true),
+    approvalRateLimit: num(env, "APPROVAL_RATE_LIMIT", 20, 1, 10_000, true),
+    paypalReadRateLimit: num(env, "PAYPAL_READ_RATE_LIMIT", 60, 1, 100_000, true),
+    rateLimitWindowMinutes: num(env, "RATE_LIMIT_WINDOW_MINUTES", 10, 1, 1440),
+    paypalDailyWriteCap: num(env, "PAYPAL_DAILY_WRITE_CAP", 100, 1, 1_000_000, true),
+    listCacheSeconds: num(env, "LIST_CACHE_SECONDS", 30, 0, 3600),
+    webhookRateLimit: num(env, "WEBHOOK_RATE_LIMIT", 30, 1, 100_000, true),
+    webhookGlobalRateLimit: num(env, "WEBHOOK_GLOBAL_RATE_LIMIT", 120, 1, 1_000_000, true),
+    seedSessionIntervalMinutes: num(env, "SEED_SESSION_INTERVAL_MINUTES", 60, 1, 10_080),
+    seedDailyCap: num(env, "SEED_DAILY_CAP", 10, 1, 10_000, true),
+    executionConcurrency: num(env, "EXECUTION_CONCURRENCY", 2, 1, 100, true),
   };
 }
 

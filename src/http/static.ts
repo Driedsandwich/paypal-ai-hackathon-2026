@@ -60,7 +60,7 @@ export function serveStatic(root: string | undefined, pathname: string, res: Ser
   createReadStream(file).pipe(res);
 }
 
-export type ReturnOutcome = "approved" | "completed" | "not_approved" | "unknown_order" | "check_failed" | "cancel";
+export type ReturnOutcome = "approved" | "completed" | "not_approved" | "unknown_order" | "check_failed" | "rate_limited" | "cancel";
 
 const RETURN_TEXT: Record<ReturnOutcome, [string, string]> = {
   approved: ["Payment approved", "Thank you! PayPal confirms that you approved the payment. The seller will confirm it and ship your item."],
@@ -68,6 +68,7 @@ const RETURN_TEXT: Record<ReturnOutcome, [string, string]> = {
   not_approved: ["Payment not approved yet", "PayPal does not show this payment as approved yet. If you meant to pay, please open the payment link again."],
   unknown_order: ["Payment not found", "We could not find this payment. If you paid with a link from the seller, please contact the seller."],
   check_failed: ["We could not check your payment", "PayPal could not be reached to confirm this payment. Nothing else is needed from you now; the seller will check it in PayPal."],
+  rate_limited: ["Please try again shortly", "Too many requests from your network right now. Please reload this page in a few minutes."],
   cancel: ["Payment cancelled", "The payment was cancelled. No money was taken. You can use the link again if you change your mind."],
 };
 

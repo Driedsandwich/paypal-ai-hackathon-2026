@@ -39,7 +39,11 @@ export async function handlePayPalReturn(req: IncomingMessage, res: ServerRespon
   const token = url.searchParams.get("token") ?? "";
   if (!deps.paypal || !ORDER_TOKEN.test(token) || !deps.orders.get(token)) return send("unknown_order");
 
-  beforeLookup(); // rate limit before calling PayPal (throws when over the limit)
+  try {
+    beforeLookup(); // per-address read limit, before calling PayPal
+  } catch {
+    return send("rate_limited");
+  }
   let status: string;
   try {
     status = (await deps.paypal.getOrder(token)).status;

@@ -71,6 +71,7 @@ export function App() {
           <p className="muted">Nothing reaches a buyer or PayPal until you approve it here. The server enforces this.</p>
           {pending.map((p) => <ProposalCard key={p.id} proposal={p} onChange={refresh} />)}
           <p className="muted">AI limits: {health.limits.perIp} requests per {health.limits.windowMinutes} min per visitor, {health.limits.usedToday}/{health.limits.dailyCap} used today.</p>
+          <p className="muted">PayPal limits: {health.demoLimits.proposals} proposals and {health.demoLimits.approvals} approvals per {health.demoLimits.windowMinutes} min per visitor; {health.demoLimits.paypalWritesToday}/{health.demoLimits.paypalDailyWriteCap} PayPal actions used today.</p>
         </aside>
       </div>
     </>

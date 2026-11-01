@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { ZodError } from "zod";
 import { AgentOutputError } from "../agent/json-task.js";
+import { LimitError } from "../limits/limits.js";
 import { MoneyError } from "../money.js";
 import { maskEmailsDeep } from "../privacy/mask.js";
 import { AiTimeoutError } from "../ai/ai-sdk-provider.js";
@@ -70,6 +71,9 @@ export function sendError(res: ServerResponse, err: unknown, log: (msg: string) 
   if (err instanceof ZodError) {
     const issues = err.issues.slice(0, 20).map((i) => `${i.path.join(".") || "(body)"}: ${i.message}`);
     return sendJson(res, 400, { ok: false, error: { code: "invalid_input", message: "Some fields are missing or invalid", issues } });
+  }
+  if (err instanceof LimitError) {
+    return sendJson(res, err.status, { ok: false, error: { code: err.code, message: err.message, retryAfterSeconds: err.retryAfterSeconds } }, { "Retry-After": String(err.retryAfterSeconds) });
   }
   if (err instanceof MoneyError) {
     return sendJson(res, 400, { ok: false, error: { code: "invalid_amount", message: err.message } });

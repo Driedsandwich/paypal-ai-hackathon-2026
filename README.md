@@ -159,6 +159,17 @@ See `.env.example`. Never commit `.env`. All are optional.
 | `AI_RATE_LIMIT_PER_IP` | AI requests per client address per window (default 20). |
 | `AI_RATE_LIMIT_WINDOW_MINUTES` | Window for the per-address limit (default 10). |
 | `AI_DAILY_CAP` | AI requests per UTC day for the whole server (default 300). |
+| `PROPOSAL_RATE_LIMIT` | New proposals per demo session and per client address per window (default 20). |
+| `APPROVAL_RATE_LIMIT` | Approvals per demo session and per client address per window (default 20). |
+| `PAYPAL_READ_RATE_LIMIT` | Requests that read from PayPal, per client address per window (default 60). |
+| `RATE_LIMIT_WINDOW_MINUTES` | Window for the three limits above (default 10). |
+| `PAYPAL_DAILY_WRITE_CAP` | PayPal write calls per UTC day for the whole server (default 100; an invoice costs 3: number, create, send). |
+| `LIST_CACHE_SECONDS` | Seconds the invoice and dispute lists are cached, shared by all visitors (default 30; 0 disables). |
+| `WEBHOOK_RATE_LIMIT` | Webhook requests per client address per minute (default 30). |
+| `WEBHOOK_GLOBAL_RATE_LIMIT` | Webhook requests per minute for the whole server (default 120). |
+| `SEED_SESSION_INTERVAL_MINUTES` | A demo session may run *Seed demo data* once per this many minutes (default 60). |
+| `SEED_DAILY_CAP` | *Seed demo data* runs per UTC day for the whole server (default 10). |
+| `EXECUTION_CONCURRENCY` | Approved actions that may run at the same time; more get 503 with `Retry-After` (default 2). |
 | `FX_JPY_PER_USD` | Exchange rate for price estimates (default 150). |
 | `SELLER_BUSINESS_NAME` | Seller name on invoices and the PayPal checkout page. |
 | `PUBLIC_BASE_URL` | Public URL of the app, for PayPal return/cancel URLs (default `http://localhost:PORT`). |

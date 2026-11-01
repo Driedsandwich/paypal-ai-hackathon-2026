@@ -5,8 +5,10 @@ import { allowedActionList, disputeActions, type DisputeAction } from "../paypal
 import type { PayPalClient } from "../paypal/client.js";
 import type { Invoice } from "../paypal/types.js";
 import type { DemoBuyers } from "../demo/buyers.js";
+import { LimitError } from "../limits/limits.js";
+import type { PayPalReadCache } from "../paypal/read-cache.js";
 import type { ReminderLedger } from "../proposals/reminder-ledger.js";
-import type { ProposalKind, ProposalStore } from "../proposals/store.js";
+import { ProposalError, type Proposal, type ProposalKind, type ProposalStore } from "../proposals/store.js";
 import { showMoney } from "../money.js";
 import { SellerMoneySchema } from "./schemas.js";
 import { buildInvoicePayload, buildOrderPayload, standardReminderPayload, type AgentConfig } from "./tasks.js";
@@ -30,6 +32,12 @@ export interface ToolDeps {
   buyers: DemoBuyers;
   /** At most 2 reminders per invoice per day. */
   reminders?: ReminderLedger;
+  /** Shared 30-second cache for list reads. */
+  reads?: PayPalReadCache;
+  /** Counts one proposal against the visitor's limits (throws LimitError when over). */
+  beforePropose?: () => void;
+  /** Counts one PayPal read against the visitor's limits (throws LimitError when over). */
+  beforeRead?: () => void;
 }
 
 const NOT_CONFIGURED = { error: "PayPal is not configured on this server (set PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET)." };
@@ -55,17 +63,47 @@ function pending(p: { id: string; title: string }) {
   return { proposal_id: p.id, status: "pending_seller_approval", title: p.title, note: "Nothing was sent. The seller must approve this in the app." };
 }
 
+/** Limit and queue refusals go back to the model as a tool error instead of failing the chat. */
+function asToolError(err: unknown): { error: string } {
+  if (err instanceof LimitError || err instanceof ProposalError) return { error: err.message };
+  throw err;
+}
+
 export function agentTools(deps: ToolDeps): AiToolSpec[] {
   const { paypal } = deps;
-  const read = async <T>(fn: (pp: PayPalClient) => Promise<T>) => (paypal ? fn(paypal) : NOT_CONFIGURED);
+  const read = async <T>(fn: (pp: PayPalClient) => Promise<T>) => {
+    if (!paypal) return NOT_CONFIGURED;
+    try {
+      deps.beforeRead?.();
+    } catch (err) {
+      return asToolError(err);
+    }
+    return fn(paypal);
+  };
   const proposals = {
-    propose: <P>(kind: ProposalKind, title: string, payload: P, copyForDm?: string) =>
-      deps.proposals.propose(kind, title, payload, { owner: deps.sessionId, ...(deps.address ? { address: deps.address } : {}), ...(copyForDm ? { copyForDm } : {}) }),
+    propose: <P>(kind: ProposalKind, title: string, payload: P, copyForDm?: string): Proposal<P> => {
+      deps.proposals.assertRoom(1, deps.address);
+      deps.beforePropose?.();
+      return deps.proposals.propose(kind, title, payload, { owner: deps.sessionId, ...(deps.address ? { address: deps.address } : {}), ...(copyForDm ? { copyForDm } : {}) });
+    },
+  };
+  /** pending(...) or a tool error when a limit refuses the proposal. */
+  const offer = (make: () => Proposal) => {
+    try {
+      return pending(make());
+    } catch (err) {
+      return asToolError(err);
+    }
   };
 
   /** An error for the model when PayPal does not currently allow this dispute action. */
   const disputeRefusal = async (disputeId: string, action: DisputeAction): Promise<{ error: string } | undefined> => {
     if (!paypal) return NOT_CONFIGURED;
+    try {
+      deps.beforeRead?.();
+    } catch (err) {
+      return asToolError(err);
+    }
     const verdict = disputeActions(await paypal.getDispute(disputeId))[action];
     return verdict.allowed ? undefined : { error: verdict.reason };
   };
@@ -73,7 +111,8 @@ export function agentTools(deps: ToolDeps): AiToolSpec[] {
   const tools: AiToolSpec[] = [
     tool("list_invoices", "List the seller's recent PayPal invoices with status and amounts.", z.object({ page: z.number().int().min(1).max(100).optional(), page_size: z.number().int().min(1).max(50).optional() }), (i) =>
       read(async (pp) => {
-        const list = await pp.listInvoices({ page: i.page ?? 1, page_size: i.page_size ?? 10, total_required: true });
+        const params = { page: i.page ?? 1, page_size: i.page_size ?? 10, total_required: true };
+        const list = await (deps.reads ? deps.reads.listInvoices(pp, params) : pp.listInvoices(params));
         return { total_items: list.total_items, invoices: (list.items ?? []).map(invoiceBrief) };
       }),
     ),
@@ -82,7 +121,8 @@ export function agentTools(deps: ToolDeps): AiToolSpec[] {
     ),
     tool("list_disputes", "List the seller's PayPal disputes.", z.object({ dispute_state: z.enum(["REQUIRED_ACTION", "REQUIRED_OTHER_PARTY_ACTION", "UNDER_PAYPAL_REVIEW", "RESOLVED", "OPEN_INQUIRIES", "APPEALABLE"]).optional() }), (i) =>
       read(async (pp) => {
-        const list = await pp.listDisputes({ page_size: 20, ...(i.dispute_state ? { dispute_state: i.dispute_state } : {}) });
+        const params = { page_size: 20, ...(i.dispute_state ? { dispute_state: i.dispute_state } : {}) };
+        const list = await (deps.reads ? deps.reads.listDisputes(pp, params) : pp.listDisputes(params));
         return (list.items ?? []).map((d) => ({ dispute_id: d.dispute_id, reason: d.reason, status: d.status, amount: d.dispute_amount, seller_response_due_date: d.seller_response_due_date }));
       }),
     ),
@@ -112,7 +152,7 @@ export function agentTools(deps: ToolDeps): AiToolSpec[] {
       z.object({ invoice_id: z.string().min(1).max(30), dm_message: z.string().min(10).max(1000).optional() }),
       async (i) => {
         if (deps.reminders && deps.reminders.remaining(i.invoice_id) <= 0) return { error: "This invoice already had 2 reminders today (PayPal's daily limit). Try again tomorrow." };
-        return pending(proposals.propose("send_invoice_reminder", `Send PayPal's standard reminder for invoice ${i.invoice_id}`, standardReminderPayload(i.invoice_id), i.dm_message));
+        return offer(() => proposals.propose("send_invoice_reminder", `Send PayPal's standard reminder for invoice ${i.invoice_id}`, standardReminderPayload(i.invoice_id), i.dm_message));
       },
     ),
     tool(
@@ -121,7 +161,7 @@ export function agentTools(deps: ToolDeps): AiToolSpec[] {
       z.object({ carrier: z.string().min(1).max(64), tracking_number: z.string().min(1).max(64), order_id: z.string().max(36).optional(), capture_id: z.string().max(50).optional(), transaction_id: z.string().max(50).optional() }),
       async (i) => {
         if (i.order_id && i.capture_id) {
-          return pending(
+          return offer(() =>
             proposals.propose("add_order_tracking", `Add ${i.carrier} tracking ${i.tracking_number} to order ${i.order_id}`, {
               orderId: i.order_id,
               tracker: { capture_id: i.capture_id, tracking_number: i.tracking_number, ...carrierFor(i.carrier, "orders"), notify_payer: true },
@@ -129,7 +169,7 @@ export function agentTools(deps: ToolDeps): AiToolSpec[] {
           );
         }
         if (i.transaction_id) {
-          return pending(
+          return offer(() =>
             proposals.propose("add_invoice_tracking", `Add ${i.carrier} tracking ${i.tracking_number} to transaction ${i.transaction_id}`, {
               trackers: [{ transaction_id: i.transaction_id, tracking_number: i.tracking_number, status: "SHIPPED", ...carrierFor(i.carrier, "shipping"), notify_buyer: true }],
             }),
@@ -145,7 +185,7 @@ export function agentTools(deps: ToolDeps): AiToolSpec[] {
       async (i) => {
         const refused = await disputeRefusal(i.dispute_id, "send_message");
         if (refused) return refused;
-        return pending(proposals.propose("send_dispute_message", `Send message in dispute ${i.dispute_id}`, { disputeId: i.dispute_id, message: i.message }));
+        return offer(() => proposals.propose("send_dispute_message", `Send message in dispute ${i.dispute_id}`, { disputeId: i.dispute_id, message: i.message }));
       },
     ),
     tool(
@@ -155,7 +195,7 @@ export function agentTools(deps: ToolDeps): AiToolSpec[] {
       async (i) => {
         const refused = await disputeRefusal(i.dispute_id, "accept_claim");
         if (refused) return refused;
-        return pending(proposals.propose("accept_dispute_claim", `Accept claim and refund in dispute ${i.dispute_id}`, { disputeId: i.dispute_id, note: i.note }));
+        return offer(() => proposals.propose("accept_dispute_claim", `Accept claim and refund in dispute ${i.dispute_id}`, { disputeId: i.dispute_id, note: i.note }));
       },
     ),
   ];
@@ -182,7 +222,7 @@ export function agentTools(deps: ToolDeps): AiToolSpec[] {
         if (!buyer) return unknownBuyer;
         const listing = { title: i.item_title, description: i.description ?? "", price: i.price, quantity: i.quantity ?? 1 };
         const payload = buildInvoicePayload(listing, buyer.alias, { note: i.note }, deps.agentConfig.sellerBusinessName);
-        return pending(proposals.propose("create_and_send_invoice", `Send invoice for ${showMoney(i.price)} to ${buyer.alias}: ${i.item_title}`, payload));
+        return offer(() => proposals.propose("create_and_send_invoice", `Send invoice for ${showMoney(i.price)} to ${buyer.alias}: ${i.item_title}`, payload));
       }),
     );
   } else {
@@ -192,7 +232,7 @@ export function agentTools(deps: ToolDeps): AiToolSpec[] {
         const buyer = deps.buyers.resolve(i.buyer);
         if (!buyer) return unknownBuyer;
         const listing = { title: i.item_title, description: i.description ?? "", price: i.price, quantity: i.quantity ?? 1 };
-        return pending(proposals.propose("create_payment_link", `Create payment link for ${showMoney(i.price)} for ${buyer.alias}: ${i.item_title}`, buildOrderPayload(listing, buyer.alias, deps.agentConfig), i.note));
+        return offer(() => proposals.propose("create_payment_link", `Create payment link for ${showMoney(i.price)} for ${buyer.alias}: ${i.item_title}`, buildOrderPayload(listing, buyer.alias, deps.agentConfig), i.note));
       }),
     );
   }

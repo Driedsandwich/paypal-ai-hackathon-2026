@@ -40,6 +40,7 @@ export interface Health {
   ai: { provider: string; model: string | null };
   paymentPath: "invoice" | "order";
   fxJpyPerUsd: number;
+  demoLimits: { windowMinutes: number; proposals: number; approvals: number; paypalReads: number; paypalWritesToday: number; paypalDailyWriteCap: number };
   limits: { perIp: number; windowMinutes: number; dailyCap: number; maxOutputTokens: number; usedToday: number };
   demo: { notice: string; buyerEmailsConfigured: number; buyers: Array<{ alias: string; email: string }> };
   agStudio: { licensed: boolean };
