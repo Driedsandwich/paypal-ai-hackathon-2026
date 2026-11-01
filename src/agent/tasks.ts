@@ -91,7 +91,8 @@ Rules:
 
 const BILLING_SYSTEM = `You write the short note a small Japanese seller includes with a PayPal payment request to an overseas buyer.
 Write friendly, clear English. Mention the item and that payment is handled securely by PayPal.
-Do not invent shipping dates, discounts, tracking numbers or promises. Max 1000 characters for note.`;
+Do not invent shipping dates, discounts, tracking numbers or promises. Max 1000 characters for note.
+When the input has shipping and total, the buyer pays the total (item price plus shipping). If you mention an amount, state the total; you may add the item price and the shipping, but never call the item price "the price" or "the total". Use only amounts from the input.`;
 
 const NUDGE_SYSTEM = `You write short, friendly payment reminder messages that a small Japanese seller sends to overseas buyers by social media direct message (DM).
 PayPal separately sends its own standard reminder email, so the DM can say that the buyer may also get a reminder from PayPal.
@@ -143,13 +144,22 @@ export class Agent {
   }
 
   private async buyerMessage(listing: ListingForSale) {
-    return runJsonTask(this.ai, {
+    const totals = listingTotals(listing); // throws MoneyError if invalid (price or shipping)
+    const currency = totals.currency_code;
+    const money = (value: string) => ({ currency_code: currency, value });
+    // With shipping, the note writer gets the item price, the shipping and the total (pass 5).
+    const amounts = totals.shipping
+      ? { item_price: money(totals.item_total), ...(listing.quantity > 1 ? { quantity: listing.quantity, unit_price: money(totals.unit) } : {}), shipping: money(totals.shipping), total: money(totals.total) }
+      : { price: listing.price };
+    const answer = await runJsonTask(this.ai, {
       task: "buyerMessage",
       system: BILLING_SYSTEM,
-      input: { item: listing.title, price: listing.price, seller: this.config.sellerBusinessName ?? "" },
+      input: { item: listing.title, ...amounts, seller: this.config.sellerBusinessName ?? "" },
       schema: BuyerMessageAiSchema,
       maxTokens: Math.min(this.config.maxOutputTokens, 600),
     });
+    answer.value.note = noteMatchingTotal(answer.value.note, listing.title, totals);
+    return answer;
   }
 
   /** Task 2 (invoice path): invoice draft + notification for seller approval. Nothing is sent here. */
@@ -426,4 +436,33 @@ export function otherEvidenceFallback(payload: ProvideEvidencePayload): ProvideE
     evidences: [{ evidence_type: "OTHER", notes: text || "Evidence for this case." }],
     attachments: payload.attachments.map((a) => ({ ...a })),
   };
+}
+
+/** Amounts written in a text: next to a currency sign or code, or with two decimals. */
+const AMOUNT = /(?:US\$|\$|€|£|¥|\b[A-Z]{3}\b)\s?(\d[\d,]*(?:\.\d+)?)|(\d[\d,]*(?:\.\d+)?)\s?(?:\b[A-Z]{3}\b|dollars?\b|yen\b)|\b(\d[\d,]*\.\d{2})\b/g;
+
+/** The amounts in a text, in hundredths (so 80, 80.00 and 80.0 compare equal). */
+export function amountsIn(text: string): number[] {
+  return [...text.matchAll(AMOUNT)].map((m) => Math.round(Number((m[1] ?? m[2] ?? m[3] ?? "").replace(/,/g, "")) * 100)).filter((n) => Number.isFinite(n));
+}
+
+/**
+ * The buyer note must not contradict what PayPal bills (pass 5: "The price is 80.00 USD" on a
+ * 95.00 USD invoice). Amounts other than the unit price, item total, shipping and total make the
+ * app write a plain note itself; a note that names an amount but not the total gets the total
+ * (with item price and shipping) appended. A note without amounts stays as it is.
+ */
+export function noteMatchingTotal(note: string, title: string, totals: ReturnType<typeof listingTotals>): string {
+  const cur = totals.currency_code;
+  const cents = (v: string) => Math.round(Number(v) * 100);
+  const allowed = new Set([totals.unit, totals.item_total, totals.total, ...(totals.shipping ? [totals.shipping] : [])].map(cents));
+  const found = amountsIn(note);
+  if (found.length === 0) return note;
+  const breakdown = totals.shipping ? ` (item ${totals.item_total} ${cur} + shipping ${totals.shipping} ${cur})` : "";
+  if (found.some((a) => !allowed.has(a))) {
+    return `Thank you for your order of "${title.slice(0, 200)}". The total is ${totals.total} ${cur}${breakdown}. You can pay securely with PayPal.`;
+  }
+  if (found.includes(cents(totals.total))) return note;
+  const tail = ` Total${totals.shipping ? " including shipping" : ""}: ${totals.total} ${cur}${breakdown}.`;
+  return `${note.trimEnd().slice(0, 1000 - tail.length)}${tail}`;
 }
