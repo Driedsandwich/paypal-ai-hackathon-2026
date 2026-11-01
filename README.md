@@ -60,11 +60,19 @@ PayPal until the seller clicks Approve**, and the server enforces that.
 5. **Tracking:** at step 4 enter a carrier (`Japan Post`) and a tracking number, click *Add
    tracking*, then **Approve**. The app registers the tracking with PayPal for this payment.
    Tracking can only be added to invoices and payment links this demo created.
-6. **Dispute (optional):** open an *item not received* case as the sandbox buyer (Resolution
-   Center). The journey shows a dashed branch to **Evidence + reply**; *Build evidence pack*
-   opens **Disputes**: the AI writes a summary, a timeline and an English reply, attaches a
-   PDF invoice summary, and flags in red any date, amount or tracking number it cannot back up
-   with PayPal's data. Only actions PayPal currently allows become proposals.
+6. **Dispute (optional):** as the sandbox buyer, open an *item not received* case for the
+   paid invoice in PayPal's Resolution Center and copy its **case ID** (it looks like
+   `PP-R-ABC-12345678`). In Okuri open **Disputes**, paste the ID into the box at the top and
+   click *Open a case by ID*. The case opens at once, and the sale's journey shows a dashed
+   branch to **Evidence + reply**. New sandbox cases can take a while (more than 3 minutes in
+   our test) to appear in PayPal's dispute list, so without the ID they show up only later
+   (sooner when the dispute webhook is set up, see Setup). *Build evidence pack with AI*: the AI writes a
+   summary, a timeline and an English reply, attaches a PDF invoice summary, and flags in red
+   any date, amount or tracking number it cannot back up with PayPal's data. Only actions
+   PayPal currently allows become proposals. In our sandbox test the case moved on to PayPal's
+   review within minutes and PayPal offered the seller no action; in that state the app says
+   *"PayPal is reviewing this case. No seller action is available right now."* and the pack
+   and the reply draft stay available to read and copy, with nothing to approve.
 7. **Insights:** revenue by buyer country, unpaid invoices and the dispute rate, built with
    AG Studio from the same sales.
 8. *Ask Okuri* (footer link): free chat with the agent in Japanese or English; anything it
@@ -85,6 +93,7 @@ repository was created during that period. Dated log of the work (newest last):
 | 2026-11-01 | Build pass 1 (spec v1): Invoicing v2, Add Tracking, Orders tracking and Customer Disputes calls; approval gate (server-side proposals); webhook event routing; AI agent (listing, invoice, reminders, dispute evidence pack, free chat) on the Vercel AI SDK with an offline fake provider; AI rate limits and daily cap; JSON API; minimal React UI with five views. |
 | 2026-11-01 | Pass 2a (review fixes for the public demo): per-visitor demo sessions and proposal ownership; recipients only from the demo-buyer allowlist (by alias); public DTOs and email masking; limits on proposals, approvals, PayPal reads/writes, webhooks, seeding and execution; verified return page; deadlines and an "unknown" outcome for timed-out writes; AI budget per model call; redaction of contact details before AI calls; PayPal's standard reminders with a Copy-for-DM text; dispute actions only when PayPal allows them; currency precision; 3-day webhook de-duplication. |
 | 2026-11-01 | Pass 2: visual design (S3 "transaction journey" structure with the A1 "paper & seal" look; layout table in `docs/design/LAYOUT_TABLE.md`); journeys API and sale registry; Approvals inbox; offline PayPal simulator (`PAYPAL_OFFLINE_DEMO`); tracking only for sales this demo created; AI fallback provider; Insights with AG Studio; Render Blueprint (`render.yaml`); screenshots in `docs/media/`. |
+| 2026-11-01 | Pass 3a: dispute discovery. Cases are found from PayPal's list, verified dispute webhooks and *Open a case by ID* (a bounded in-memory registry), linked to their sale by the disputed transaction (invoice payment or order capture), with a clear state when PayPal offers the seller no action; tests use a recorded sandbox dispute shape. |
 
 ## Setup
 
@@ -107,7 +116,8 @@ PayPal sandbox preparation:
    Invoices and payment links can only be sent to these accounts (shown as *Demo buyer 1, 2, …*).
 3. Optional: add a webhook for `https://<your-host>/webhooks/paypal` with the events
    `INVOICING.INVOICE.PAID`, `PAYMENT.CAPTURE.COMPLETED`, `CUSTOMER.DISPUTE.CREATED` and
-   `CUSTOMER.DISPUTE.UPDATED`, and put its id in `PAYPAL_WEBHOOK_ID`.
+   `CUSTOMER.DISPUTE.UPDATED`, and put its id in `PAYPAL_WEBHOOK_ID`. With the dispute events
+   the app learns about new cases before they appear in PayPal's dispute list.
 
 ## Run
 
@@ -189,8 +199,9 @@ small DTOs with email addresses masked. Limits answer 429 (or 503 when busy) wit
 | `POST /api/invoices/nudge` | AI: **proposals** to send PayPal's standard reminder, each with a Copy-for-DM text |
 | `GET /api/orders/{id}`, `POST /api/orders/{id}/capture` | Order status; capture **proposal** (orders created in your session, once PayPal reports `APPROVED`) |
 | `POST /api/tracking` | Tracking **proposal** (`kind: "invoice"` with `invoice_id`, or `"order"`), only for invoices and orders this demo created |
-| `GET /api/disputes`, `GET /api/disputes/{id}` | Live disputes from PayPal |
-| `POST /api/disputes/{id}/evidence-pack` | AI: evidence pack + evidence and reply **proposals** (only for actions PayPal currently allows) |
+| `GET /api/disputes`, `GET /api/disputes/{id}` | Disputes from PayPal's list plus cases the app knows from webhooks or by ID (`in_paypal_list`, linked `sale_id`); one case with what PayPal allows now (`seller_action_available`, `notice`) |
+| `POST /api/disputes/open` | *Open a case by ID*: `{ "dispute_id": "PP-…" }`; reads the case from PayPal and remembers it for every visitor (10 lookups per 10 minutes per browser and per address, on top of the PayPal read limit) |
+| `POST /api/disputes/{id}/evidence-pack` | AI: evidence pack + evidence and reply **proposals** (only for actions PayPal currently allows; read-only pack when it allows none) |
 | `POST /api/disputes/{id}/accept-claim` | Accept-claim **proposal** (only when PayPal allows it) |
 | `GET /api/proposals`, `POST /api/proposals/{id}/approve`, `…/reject` | The approval gate (your session's proposals only) |
 | `GET /api/events` | Webhook event log (in memory) |
@@ -316,7 +327,7 @@ src/
   limits/              AI limits and budget; limits on the shared PayPal account
   privacy/             email masking for responses, redaction before AI calls
   journeys/            sale registry and markers, journey view, offline PayPal worlds,
-                       tracking allowlist
+                       tracking allowlist, dispute-id registry and dispute linking
   money.ts             currencies, precision, integer minor units
   util/                bounded TTL map
   docs/simple-pdf.ts   tiny PDF writer for the evidence attachment
@@ -329,8 +340,9 @@ docs/                  build spec, decisions, build log, media
 ```
 
 No database: state the app owns (proposals, demo sessions' ownership, order registry, events,
-de-duplication ids, limit counters) is in memory and per process; invoices and disputes are
-read live from PayPal (list reads cached for 30 seconds).
+de-duplication ids, limit counters, the dispute-id registry) is in memory and per process;
+invoices and disputes are read live from PayPal (list reads cached for 30 seconds). Disputes
+that PayPal's list does not return yet (known from a webhook or opened by ID) are read by id.
 
 ## Demo media
 
