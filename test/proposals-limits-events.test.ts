@@ -1,0 +1,190 @@
+import { describe, expect, it } from "vitest";
+import { renderTextPdf } from "../src/docs/simple-pdf.js";
+import { EventLog } from "../src/events/log.js";
+import { AiLimiter } from "../src/limits/rate-limit.js";
+import { createPayPalExecutor, payerLinkOf } from "../src/proposals/actions.js";
+import { ProposalError, ProposalStore } from "../src/proposals/store.js";
+import { fakeEmail } from "./helpers/fake-fetch.js";
+import { paypalWith, SANDBOX } from "./helpers/paypal.js";
+
+describe("ProposalStore (approval gate)", () => {
+  it("does nothing until approve, then runs the stored payload exactly once", async () => {
+    const runs: unknown[] = [];
+    const store = new ProposalStore(async (kind, payload) => {
+      runs.push({ kind, payload });
+      return { done: true };
+    });
+    const p = store.propose("send_dispute_message", "Reply to buyer", { disputeId: "D1", message: "hello" });
+    expect(p.status).toBe("pending");
+    expect(runs).toHaveLength(0);
+
+    const done = await store.approve(p.id);
+    expect(done.status).toBe("executed");
+    expect(done.result).toEqual({ done: true });
+    expect(runs).toEqual([{ kind: "send_dispute_message", payload: { disputeId: "D1", message: "hello" } }]);
+
+    await expect(store.approve(p.id)).rejects.toMatchObject({ code: "not_pending" });
+    expect(runs).toHaveLength(1);
+  });
+
+  it("refuses unknown and rejected proposals", async () => {
+    let ran = false;
+    const store = new ProposalStore(async () => void (ran = true));
+    await expect(store.approve("nope")).rejects.toBeInstanceOf(ProposalError);
+    const p = store.propose("accept_dispute_claim", "Accept claim", { disputeId: "D1", note: "n" });
+    store.reject(p.id);
+    await expect(store.approve(p.id)).rejects.toMatchObject({ code: "not_pending" });
+    expect(() => store.reject(p.id)).toThrow(ProposalError);
+    expect(ran).toBe(false);
+  });
+
+  it("freezes the payload so it cannot be changed after the seller saw it", () => {
+    const payload = { disputeId: "D1", message: "original" };
+    const store = new ProposalStore(async () => undefined);
+    const p = store.propose("send_dispute_message", "t", payload);
+    payload.message = "changed later";
+    expect((p.payload as typeof payload).message).toBe("original");
+    expect(() => {
+      (p.payload as typeof payload).message = "x";
+    }).toThrow();
+  });
+
+  it("refuses a second approve while the first is still running", async () => {
+    let release!: () => void;
+    const store = new ProposalStore(() => new Promise((r) => (release = () => r("ok"))));
+    const p = store.propose("capture_order", "Capture", { orderId: "O1" });
+    const first = store.approve(p.id);
+    await expect(store.approve(p.id)).rejects.toMatchObject({ code: "not_pending" });
+    release();
+    expect((await first).status).toBe("executed");
+  });
+
+  it("records failures with a safe error description", async () => {
+    const store = new ProposalStore(
+      async () => {
+        throw new Error("boom");
+      },
+      { describeError: (e) => ({ message: (e as Error).message }) },
+    );
+    const p = store.propose("capture_order", "Capture", { orderId: "O1" });
+    const res = await store.approve(p.id);
+    expect(res.status).toBe("failed");
+    expect(res.error).toEqual({ message: "boom" });
+  });
+});
+
+describe("PayPal executor", () => {
+  it("create_and_send_invoice: next number, create draft, then send", async () => {
+    const { client, apiCalls } = paypalWith((c) => {
+      if (c.url.endsWith("/generate-next-invoice-number")) return { json: { invoice_number: "0007" } };
+      if (c.url === `${SANDBOX}/v2/invoicing/invoices`) return { status: 201, json: { id: "INV2-7", status: "DRAFT" } };
+      if (c.url.endsWith("/INV2-7/send")) return { json: { href: "https://www.sandbox.paypal.com/invoice/p/#INV2-7", rel: "payer-view" } };
+      return undefined;
+    });
+    const exec = createPayPalExecutor(() => client);
+    const result = await exec("create_and_send_invoice", {
+      invoice: {
+        detail: { currency_code: "USD" },
+        primary_recipients: [{ billing_info: { email_address: fakeEmail("buyer") } }],
+        items: [{ name: "Tea bowl", quantity: "1", unit_amount: { currency_code: "USD", value: "80.00" } }],
+      },
+      notification: { send_to_recipient: true },
+    });
+    expect(result).toEqual({ invoiceId: "INV2-7", invoiceNumber: "0007", payerLink: "https://www.sandbox.paypal.com/invoice/p/#INV2-7" });
+    expect(apiCalls().map((c) => c.url.replace(SANDBOX, ""))).toEqual([
+      "/v2/invoicing/generate-next-invoice-number",
+      "/v2/invoicing/invoices",
+      "/v2/invoicing/invoices/INV2-7/send",
+    ]);
+    expect(JSON.parse(apiCalls()[1]!.body!).detail.invoice_number).toBe("0007");
+  });
+
+  it("create_payment_link returns the payer-action link", async () => {
+    const { client } = paypalWith(() => ({
+      status: 200,
+      json: { id: "O-9", status: "PAYER_ACTION_REQUIRED", links: [{ rel: "payer-action", href: "https://www.sandbox.paypal.com/checkoutnow?token=O-9" }] },
+    }));
+    const exec = createPayPalExecutor(() => client);
+    await expect(
+      exec("create_payment_link", { order: { intent: "CAPTURE", purchase_units: [{ amount: { currency_code: "USD", value: "1.00" } }] } }),
+    ).resolves.toEqual({ orderId: "O-9", status: "PAYER_ACTION_REQUIRED", payerLink: "https://www.sandbox.paypal.com/checkoutnow?token=O-9" });
+    expect(payerLinkOf([{ rel: "approve", href: "a" }])).toBe("a");
+  });
+
+  it("provide_dispute_evidence decodes base64 attachments into evidence-file parts", async () => {
+    const { client, apiCalls } = paypalWith(() => ({ json: { links: [] } }));
+    const exec = createPayPalExecutor(() => client);
+    await exec("provide_dispute_evidence", {
+      disputeId: "D1",
+      evidences: [{ evidence_type: "PROOF_OF_FULFILLMENT", notes: "n" }],
+      attachments: [{ name: "invoice.pdf", contentType: "application/pdf", base64: Buffer.from("%PDF-1.4").toString("base64") }],
+    });
+    expect(apiCalls()[0]!.form?.[1]).toEqual({ name: "evidence-file", value: "%PDF-1.4", filename: "invoice.pdf", type: "application/pdf" });
+  });
+});
+
+describe("AiLimiter", () => {
+  it("allows 20 calls per IP per 10 minutes, then refuses with a retry time", () => {
+    let now = Date.parse("2026-11-01T10:00:00Z");
+    const limiter = new AiLimiter({ perIpMax: 20, windowMs: 600_000, dailyCap: 300 }, () => now);
+    for (let i = 0; i < 20; i++) expect(limiter.take("1.2.3.4").ok).toBe(true);
+    const refused = limiter.take("1.2.3.4");
+    expect(refused).toMatchObject({ ok: false, reason: "per_ip", retryAfterSeconds: 600 });
+    expect(limiter.take("5.6.7.8").ok).toBe(true); // other IPs unaffected
+    now += 600_001;
+    expect(limiter.take("1.2.3.4").ok).toBe(true);
+  });
+
+  it("enforces the global daily cap and resets at 00:00 UTC", () => {
+    let now = Date.parse("2026-11-01T23:59:00Z");
+    const limiter = new AiLimiter({ perIpMax: 100, windowMs: 600_000, dailyCap: 3 }, () => now);
+    for (let i = 0; i < 3; i++) expect(limiter.take(`ip${i}`).ok).toBe(true);
+    const refused = limiter.take("ip9");
+    expect(refused).toMatchObject({ ok: false, reason: "daily_cap", retryAfterSeconds: 60 });
+    expect(refused.ok ? "" : refused.message).toMatch(/daily AI limit/);
+    now = Date.parse("2026-11-02T00:00:01Z");
+    expect(limiter.take("ip9").ok).toBe(true);
+  });
+});
+
+describe("EventLog", () => {
+  it("routes the four event types, ignores others, and de-duplicates by id", () => {
+    const log = new EventLog(10, () => new Date("2026-11-01T00:00:00Z"));
+    log.record({ id: "E1", event_type: "INVOICING.INVOICE.PAID", resource: { invoice: { id: "INV2-1", detail: { invoice_number: "0001" } } } });
+    log.record({ id: "E2", event_type: "PAYMENT.CAPTURE.COMPLETED", resource: { id: "CAP-1", amount: { value: "80.00", currency_code: "USD" } } });
+    log.record({ id: "E3", event_type: "CUSTOMER.DISPUTE.CREATED", resource: { dispute_id: "PP-D-1", reason: "MERCHANDISE_OR_SERVICE_NOT_RECEIVED" } });
+    log.record({ id: "E4", event_type: "CUSTOMER.DISPUTE.UPDATED", resource: { dispute_id: "PP-D-1", status: "UNDER_REVIEW" } });
+    log.record({ id: "E5", event_type: "CHECKOUT.ORDER.APPROVED", resource: {} });
+    expect(log.record({ id: "E1", event_type: "INVOICING.INVOICE.PAID" })).toBeUndefined();
+
+    expect(log.list().map((e) => [e.id, e.category, e.resourceId])).toEqual([
+      ["E5", "ignored", undefined],
+      ["E4", "dispute", "PP-D-1"],
+      ["E3", "dispute", "PP-D-1"],
+      ["E2", "payment", "CAP-1"],
+      ["E1", "invoice", "INV2-1"],
+    ]);
+    expect(log.list({ category: "dispute" }).map((e) => e.summary)).toEqual([
+      "Dispute PP-D-1 updated, status UNDER_REVIEW",
+      "Dispute PP-D-1 opened (MERCHANDISE_OR_SERVICE_NOT_RECEIVED)",
+    ]);
+    expect(log.list()[3]!.summary).toBe("Payment CAP-1 completed (80.00 USD)");
+  });
+
+  it("is bounded", () => {
+    const log = new EventLog(2);
+    for (const id of ["a", "b", "c"]) log.record({ id, event_type: "PAYMENT.CAPTURE.COMPLETED" });
+    expect(log.list().map((e) => e.id)).toEqual(["c", "b"]);
+  });
+});
+
+describe("simple PDF", () => {
+  it("writes a valid-looking single-page PDF with escaped ASCII text", () => {
+    const text = Buffer.from(renderTextPdf("Invoice (summary)", ["Item: tea bowl", "日本"])).toString("latin1");
+    expect(text.startsWith("%PDF-1.4")).toBe(true);
+    expect(text).toContain("(Invoice \\(summary\\)) Tj");
+    expect(text).toContain("(??) Tj");
+    const xref = Number(/startxref\n(\d+)/.exec(text)![1]);
+    expect(text.slice(xref, xref + 4)).toBe("xref");
+  });
+});
