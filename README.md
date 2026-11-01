@@ -23,35 +23,56 @@ PayPal until the seller clicks Approve**, and the server enforces that.
   send message, accept claim), Webhooks (signature verification).
 - **AI part:** see [How AI is used](#how-ai-is-used).
 
+## Hosted demo
+
+**URL: `https://<placeholder>.onrender.com`** (to be filled in once deployed; see
+[Deploy on Render](#deploy-on-render)).
+
+- Runs on Render's free plan with the PayPal **sandbox** and **Claude** (`claude-opus-5-5`)
+  as the AI model, with Gemini as an automatic fallback. The header shows both labels.
+- **Waking up:** the free instance sleeps after about 15 minutes without visitors. The first
+  page load then takes **about one minute** (a blank page or Render's loading screen); after
+  that the app answers normally. Waking up also clears the in-memory state (your proposals
+  and the activity log); invoices the app created are recognised again from PayPal.
+- **Sandbox buyer for paying invoices:** the login of the sandbox *personal* account is in the
+  Devpost submission's testing instructions (it is not in this public repository). Invoices
+  from the hosted demo can only go to the configured demo buyers, shown as *Demo buyer 1, 2…*.
+- No login: each browser gets its own demo session. Proposals you create are visible only in
+  your browser; invoices on the shared sandbox account are visible to every visitor.
+
 ## Judge walkthrough (about 5 minutes)
 
-1. Open the app. The header shows which PayPal environment and which AI model are in use. A
-   yellow banner explains anything that is not configured.
-2. **New item:** pick a sample item (for example the tea bowl) and click *Draft English listing
-   with AI*. You get an English title and description, item specifics, a USD price
-   **estimate** (converted in code at `FX_JPY_PER_USD`), a plain customs description and an HS
-   code candidate marked **check before use**.
-3. Choose a demo buyer (for example *Demo buyer 1*) and click *Prepare invoice for approval*.
-   A proposal card shows the Invoicing v2 payload (the buyer appears by alias) and the
-   AI-written message to the buyer. Click **Approve and send**: the app creates the draft
-   invoice and sends it through PayPal.
-4. **Invoices:** the grid is read live from the sandbox. *Prepare reminders for unpaid
-   invoices* creates one proposal per unpaid invoice to send **PayPal's standard reminder**
-   (PayPal uses its own text; at most 2 per invoice per day). The AI writes a friendly
-   message shown as **Copy for DM**, for the seller to send over social media.
-5. Pay the invoice as the sandbox buyer. If a webhook is configured, `INVOICING.INVOICE.PAID`
-   shows up under **Dashboard → PayPal webhook events**.
-6. **Shipments:** enter the invoice id, carrier (for example `Japan Post`) and a tracking
-   number, then approve. The app looks up the PayPal transaction and records the tracking.
-7. **Disputes:** open a dispute as the sandbox buyer (Resolution Center), then *Open* it here,
-   add the invoice id and tracking, and click *Build evidence pack with AI*. You get a summary,
-   a timeline, a PDF invoice summary to attach, and an English reply. Any date, amount or
-   tracking number the AI wrote that is not in the PayPal data is flagged in red. Only the
-   actions PayPal currently allows become proposals (*Send reply* only while the dispute is an
-   inquiry; *Provide evidence* only when PayPal asks for it). The app checks again right before
-   sending; if the dispute has moved on, the proposal is marked *obsolete* and nothing is sent.
-8. **Dashboard → Ask Okuri:** free chat (Japanese or English). The agent can look things up
-   in PayPal; anything it wants to send becomes a proposal in the approvals panel.
+1. **Open the app.** The home page is the **journey** of one sale: from the seller in Japan
+   (left) to the buyer's country (right) in five steps: Draft, Invoice, Paid, Tracking,
+   Delivered. The header shows **PayPal sandbox** and the AI model (**Claude**). The count
+   strip shows how many sales are at each stage. *Previous / Next* switch between sales.
+2. **New item:** pick a sample (for example 手作り 抹茶碗, a tea bowl), choose the buyer
+   country and click *Draft English listing with AI*. You get an English title and
+   description, item specifics, a USD price **estimate** (converted in code at
+   `FX_JPY_PER_USD`), a customs line and an HS code candidate marked **check before use**.
+3. Choose *Demo buyer 1* and click *Prepare invoice for approval*. You land on the journey at
+   step 2 with a callout: the invoice total and **Approve**. *Review* opens the **Approvals**
+   inbox, which lists every proposal across sales with the exact PayPal payload. Click
+   **Approve**: the app creates the invoice with the Invoicing v2 API and PayPal emails it.
+4. **Pay** the invoice as the sandbox buyer (link in PayPal's email, or log in to the sandbox
+   with the buyer account from the testing instructions). Back in Okuri, the journey moves to
+   *Paid* (the list is cached for up to 30 seconds; reload the page).
+5. **Tracking:** at step 4 enter a carrier (`Japan Post`) and a tracking number, click *Add
+   tracking*, then **Approve**. The app registers the tracking with PayPal for this payment.
+   Tracking can only be added to invoices and payment links this demo created.
+6. **Dispute (optional):** open an *item not received* case as the sandbox buyer (Resolution
+   Center). The journey shows a dashed branch to **Evidence + reply**; *Build evidence pack*
+   opens **Disputes**: the AI writes a summary, a timeline and an English reply, attaches a
+   PDF invoice summary, and flags in red any date, amount or tracking number it cannot back up
+   with PayPal's data. Only actions PayPal currently allows become proposals.
+7. **Insights:** revenue by buyer country, unpaid invoices and the dispute rate, built with
+   AG Studio from the same sales.
+8. *Ask Okuri* (footer link): free chat with the agent in Japanese or English; anything it
+   wants to send becomes a proposal in Approvals.
+
+**No PayPal at hand?** The offline demo (`PAYPAL_OFFLINE_DEMO=true`, see Run) gives every
+browser six sample sales at different steps, with *Simulate buyer payment / dispute /
+delivery* buttons in place of the buyer. Nothing reaches PayPal; the header says "offline".
 
 ## Built during the submission period
 
@@ -63,6 +84,7 @@ repository was created during that period. Dated log of the work (newest last):
 | 2026-10-31 | Project scaffold: TypeScript/Node setup, PayPal REST client (OAuth token, Orders v2 create/capture, webhook endpoint with signature verification via the PayPal API), pluggable AI provider interface, tests with mocked PayPal responses, pre-publish check script, CI. |
 | 2026-11-01 | Build pass 1 (spec v1): Invoicing v2, Add Tracking, Orders tracking and Customer Disputes calls; approval gate (server-side proposals); webhook event routing; AI agent (listing, invoice, reminders, dispute evidence pack, free chat) on the Vercel AI SDK with an offline fake provider; AI rate limits and daily cap; JSON API; minimal React UI with five views. |
 | 2026-11-01 | Pass 2a (review fixes for the public demo): per-visitor demo sessions and proposal ownership; recipients only from the demo-buyer allowlist (by alias); public DTOs and email masking; limits on proposals, approvals, PayPal reads/writes, webhooks, seeding and execution; verified return page; deadlines and an "unknown" outcome for timed-out writes; AI budget per model call; redaction of contact details before AI calls; PayPal's standard reminders with a Copy-for-DM text; dispute actions only when PayPal allows them; currency precision; 3-day webhook de-duplication. |
+| 2026-11-01 | Pass 2: visual design (S3 "transaction journey" structure with the A1 "paper & seal" look; layout table in `docs/design/LAYOUT_TABLE.md`); journeys API and sale registry; Approvals inbox; offline PayPal simulator (`PAYPAL_OFFLINE_DEMO`); tracking only for sales this demo created; AI fallback provider; Insights with AG Studio; Render Blueprint (`render.yaml`); screenshots in `docs/media/`. |
 
 ## Setup
 
@@ -96,6 +118,39 @@ node --env-file=.env dist/server.js    # or: npm start (reads the real environme
 
 Open `http://localhost:3000`. The server listens on `PORT` (default 3000).
 
+**Run it with your own sandbox app (judges):** create a sandbox REST app and a sandbox
+personal (buyer) account in the PayPal developer dashboard, then put into `.env` at least
+`PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`, `DEMO_BUYER_EMAILS` (the buyer account's email)
+and, for Claude, `AI_PROVIDER=anthropic` and `AI_API_KEY`. Leave `AI_PROVIDER` empty to use the
+offline rule-based AI instead. Then `npm run build` and `node --env-file=.env dist/server.js`,
+open `http://localhost:3000`, and follow the walkthrough above. Webhooks need a public URL
+(optional; the app also reads the invoice status from PayPal).
+
+**Offline demo (no keys at all):**
+
+```sh
+npm run build
+PAYPAL_OFFLINE_DEMO=true node dist/server.js
+```
+
+Every browser gets a private, in-memory PayPal with six sample sales (one waiting for invoice
+approval, one waiting for payment, one waiting for tracking approval, one shipped with an open
+dispute, one delivered, one draft). Approve, reject, prepare and *Simulate…* buttons all work;
+nothing leaves the process. Screenshots: `node scripts/screenshots.mjs` (needs Playwright with
+Chromium, not a project dependency) writes them to `docs/media/`.
+
+### Deploy on Render
+
+`render.yaml` is a Render Blueprint for one **free web service** (no database): build
+`npm ci && npm run build`, start `npm start`, health check `/api/health`, Node 22
+(`NODE_VERSION`), `TRUST_PROXY_HOPS=1`. In the Render dashboard choose *New → Blueprint*, pick
+this repository, and fill in the values marked `sync: false` (PayPal client id and secret,
+webhook id, AI keys, AG Studio licence, demo buyer emails, `PUBLIC_BASE_URL` = the service
+URL, seller name). Set `PAYPAL_OFFLINE_DEMO=true` to run the hosted demo without PayPal
+credentials. The Blueprint fields follow Render's Blueprint specification as I know it; the
+Render docs could not be opened from the build environment, so check them when you first
+deploy.
+
 UI development with hot reload: run the server as above, then `npm run dev:web` (Vite on its
 own port, proxying `/api` to port 3000).
 
@@ -105,9 +160,9 @@ own port, proxying `/api` to port 3000).
 cannot create invoices in USD (this can depend on the account's country), set
 `PAYMENT_PATH=order`: the same flow then creates Orders v2 payment links (`payer-action`
 link), the buyer is sent back to `/paypal/return`, and a capture proposal appears for the
-seller to approve. The header and `/api/health` always show the path in use. **The hosted
-demo is not deployed yet** (next pass); its path will be stated here once it is tested
-against the sandbox account.
+seller to approve. The header and `/api/health` always show the path in use. The hosted demo
+uses `PAYMENT_PATH=invoice` (`render.yaml`); this still has to be tested against the sandbox
+merchant account (see `docs/BUILD_LOG.md`).
 
 ### HTTP API
 
@@ -131,7 +186,7 @@ small DTOs with email addresses masked. Limits answer 429 (or 503 when busy) wit
 | `GET /api/invoices`, `GET /api/invoices/{id}` | Live invoices from PayPal |
 | `POST /api/invoices/nudge` | AI: **proposals** to send PayPal's standard reminder, each with a Copy-for-DM text |
 | `GET /api/orders/{id}`, `POST /api/orders/{id}/capture` | Order status; capture **proposal** (orders created in your session, once PayPal reports `APPROVED`) |
-| `POST /api/tracking` | Tracking **proposal** (`kind: "invoice"` or `"order"`) |
+| `POST /api/tracking` | Tracking **proposal** (`kind: "invoice"` with `invoice_id`, or `"order"`), only for invoices and orders this demo created |
 | `GET /api/disputes`, `GET /api/disputes/{id}` | Live disputes from PayPal |
 | `POST /api/disputes/{id}/evidence-pack` | AI: evidence pack + evidence and reply **proposals** (only for actions PayPal currently allows) |
 | `POST /api/disputes/{id}/accept-claim` | Accept-claim **proposal** (only when PayPal allows it) |
@@ -139,6 +194,8 @@ small DTOs with email addresses masked. Limits answer 429 (or 503 when busy) wit
 | `GET /api/events` | Webhook event log (in memory) |
 | `POST /api/demo/seed` | **Proposal** to create sample invoices/payment links for the demo buyers (once per hour per visitor) |
 | `POST /api/chat` | AI: free chat with tools (rate limited) |
+| `GET /api/journeys` | Sales (journeys) you can see, with steps, the callout for the current step, dispute branch, activity and counts |
+| `POST /api/offline/simulate` | Offline demo only: act as the buyer (`payment`, `dispute`) or the carrier (`delivery`) for one of your sales |
 | `POST /webhooks/paypal` | PayPal webhook receiver (signature verified via PayPal) |
 
 ## Test
@@ -163,6 +220,10 @@ See `.env.example`. Never commit `.env`. All are optional.
 | `AI_PROVIDER` | `anthropic`, `google`, `openai` or `fake`. Empty means `fake` (offline, rule-based). |
 | `AI_MODEL` | Model id. Defaults: `claude-opus-5-5` (anthropic), `gemini-3.5-flash` (google), `gpt-5.4-mini` (openai). |
 | `AI_API_KEY` | API key for the chosen AI provider. |
+| `AI_FALLBACK_PROVIDER` | Optional second provider (`anthropic`, `google`, `openai`), used automatically when the primary fails, times out, is cut off by the output cap, or its daily budget is used up. Empty = no fallback. |
+| `AI_FALLBACK_MODEL` | Model id for the fallback (default: that provider's default). |
+| `AI_FALLBACK_API_KEY` | API key for the fallback provider (without it the fallback is skipped with a warning). |
+| `AI_FALLBACK_DAILY_CAP` | Model calls per UTC day for the fallback provider (default 300). |
 | `AI_MAX_OUTPUT_TOKENS` | Max output tokens per AI call, thinking included (default 2000). |
 | `AI_RATE_LIMIT_PER_IP` | Valid AI requests per client address per window, counted after input validation (default 20). |
 | `AI_RATE_LIMIT_WINDOW_MINUTES` | Window for the per-address AI limits (default 10). |
@@ -184,7 +245,8 @@ See `.env.example`. Never commit `.env`. All are optional.
 | `PUBLIC_BASE_URL` | Public URL of the app, for PayPal return/cancel URLs (default `http://localhost:PORT`). |
 | `DEMO_BUYER_EMAILS` | Sandbox buyer (personal) account emails, comma-separated. They are the **only** recipients invoices and payment links can go to; the UI and API show them as *Demo buyer 1, 2, …* and the address is added only at execution. |
 | `TRUST_PROXY_HOPS` | Number of trusted proxies in front of the app (default 0 = use the socket address). With N > 0 the client address is the N-th `X-Forwarded-For` entry from the right, validated as an IP (falls back to the socket address). Behind a single platform proxy such as Render, set 1. |
-| `AG_STUDIO_LICENSE` | AG Studio licence for the dashboard (next pass); empty shows a watermark. |
+| `AG_STUDIO_LICENSE` | AG Studio licence key for the Insights dashboard. Empty runs AG Studio as a trial (a console message and a short "For Trial Use Only" watermark). The key is sent to the browser (AG Studio is a browser component). |
+| `PAYPAL_OFFLINE_DEMO` | `true` = simulate PayPal in memory, a private world per browser; nothing reaches PayPal. For keyless demos and screenshots. Wins over the PayPal credentials. Default `false`. |
 | `MAX_CONCURRENT_REQUESTS` | Concurrent in-flight API, webhook and return-page requests; more get 503 with `Retry-After` (default 20). |
 | `PORT` | HTTP port (default 3000). |
 
@@ -199,6 +261,11 @@ At runtime the model provider is chosen by `AI_PROVIDER`:
   "offline demo" everywhere it appears.
 
 All real providers are called through the **Vercel AI SDK** (`ai` 6 with `@ai-sdk/*`).
+With `AI_FALLBACK_PROVIDER` (for example `google`), a second provider answers automatically
+when the primary errors, times out, is cut off by the output cap, or its daily budget
+(`AI_DAILY_CAP`) is used up; the fallback has its own budget (`AI_FALLBACK_DAILY_CAP`). Every
+AI answer carries `generated_by` (provider and model, plus `fallback_from` when the fallback
+answered), and the UI shows which one wrote it ("Claude", or "Gemini · fallback").
 The agent has four typed tasks and a chat entry point:
 
 1. **draftListing**: Japanese item → English title, description, item specifics, a plain
@@ -237,7 +304,8 @@ src/
   http/                JSON API routes, demo sessions, client address, public DTOs,
                        PayPal return page, error mapping, static file serving
   paypal/              REST client (fetch, no SDK): OAuth, Orders v2, Invoicing v2,
-                       Add Tracking, Disputes, webhook verification; carrier mapping; types
+                       Add Tracking, Disputes, webhook verification; carrier mapping; types;
+                       offline in-memory simulator
   proposals/           approval gate (ProposalStore), the executor (the only code that
                        calls PayPal write methods), order registry, reminder ledger
   ai/                  provider seam, Vercel AI SDK provider, offline fake provider
@@ -245,12 +313,15 @@ src/
   events/              in-memory webhook event log and 3-day de-duplication cache
   limits/              AI limits and budget; limits on the shared PayPal account
   privacy/             email masking for responses, redaction before AI calls
+  journeys/            sale registry and markers, journey view, offline PayPal worlds,
+                       tracking allowlist
   money.ts             currencies, precision, integer minor units
   util/                bounded TTL map
   docs/simple-pdf.ts   tiny PDF writer for the evidence attachment
   demo/                Japanese sample items, demo buyers (aliases)
-web/                   React UI (Vite), built to dist/public
-scripts/               pre-publish scan of git-tracked files
+web/                   React UI (Vite), built to dist/public; Insights with AG Studio
+scripts/               pre-publish scan of git-tracked files; screenshot script
+render.yaml            Render Blueprint (free web service)
 test/                  vitest tests (PayPal and AI faked; no keys needed)
 docs/                  build spec, decisions, build log, media
 ```
@@ -261,7 +332,10 @@ read live from PayPal (list reads cached for 30 seconds).
 
 ## Demo media
 
-Demo video and screenshots go in [`docs/media/`](docs/media/).
+Screenshots of the offline demo at 1440×900 and 390×844 are in [`docs/media/`](docs/media/)
+(`journey-*`, `approvals-*`, `new-item-*`, `disputes-*`, `insights-*`,
+`journey-menu-open-mobile.png`). The design targets they were compared with are in
+[`docs/design/`](docs/design/). The demo video goes in `docs/media/` too.
 
 ## Pre-existing components
 
@@ -286,6 +360,9 @@ during the submission period). Dependencies added in this build are pinned to ex
 | `typescript` 5.9.3 (dev) | Apache-2.0 | Type checking and server build |
 | `vitest` 4.1.12 (dev) | MIT | Unit tests |
 | `@types/node` 20.19.43, `@types/react` 19.3.0, `@types/react-dom` 19.3.0 (dev) | MIT | Type definitions |
+| `ag-studio-react` 3.0.0, `ag-studio` 3.0.0 (with `ag-grid-enterprise`, `ag-grid-react`, `ag-charts-enterprise`, `ag-stack`) | Commercial (AG Grid EULA); runs as a trial without `AG_STUDIO_LICENSE` | Insights dashboard (embedded analytics) |
+| `@fontsource/noto-sans-jp` 5.3.1, `@fontsource/noto-serif-jp` 5.3.1 (Noto Sans JP / Noto Serif JP by Google) | OFL-1.1 | Self-hosted UI fonts |
+| Render (free web service) | Render terms | Hosting of the demo |
 | PayPal OpenAPI specifications (`paypal/paypal-rest-api-specifications`) | Reference only, not copied | Checked request/response field names |
 
 `@paypal/agent-toolkit` was evaluated but is **not** used (see `docs/DECISIONS.md`).
@@ -296,7 +373,8 @@ during the submission period). Dependencies added in this build are pinned to ex
 - [ ] `npm test` and `npm run prepublish-check` pass.
 - [ ] Repository is public and contains `LICENSE`.
 - [ ] Judges can run it from the Setup/Run steps with their own sandbox credentials.
-- [ ] Hosted demo deployed; README states its payment path.
+- [ ] Hosted demo deployed from `render.yaml`; URL filled in under *Hosted demo*; payment path tested.
+- [ ] Sandbox buyer login added to the Devpost testing instructions (not to this repository).
 
 ## License
 
