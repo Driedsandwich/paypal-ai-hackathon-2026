@@ -164,6 +164,10 @@ describe("disputeEvidencePack", () => {
     const none = await new Agent(offline(), CONFIG).disputeEvidencePack(at([]));
     expect(none.recommended_action).toBe("wait_for_paypal");
     expect(none.reply_draft).toContain("EJ123456789JP");
+    // Nothing to do at PayPal, but the gaps are still listed.
+    const noTracking = await new Agent(offline(), CONFIG).disputeEvidencePack({ ...at([]), tracking: undefined });
+    expect(noTracking.recommended_action).toBe("wait_for_paypal");
+    expect(noTracking.missing_information.join(" ")).toMatch(/Tracking/);
   });
 
   it("flags facts the model made up", async () => {

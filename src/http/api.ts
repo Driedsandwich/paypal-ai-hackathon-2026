@@ -496,7 +496,9 @@ const ROUTES: Route[] = [
         d = await readAndRegister(discoveryDeps(deps), paypal, id, "by_id");
       } catch (err) {
         if (err instanceof PayPalApiError && (err.status === 404 || err.status === 403)) {
-          throw new HttpError(404, "dispute_not_found", `PayPal has no case ${id} for this demo's sandbox seller account. Check the ID: it has to be a case opened against a payment to this seller.`, err.debugId ? { paypal: { debugId: err.debugId } } : {});
+          throw new HttpError(404, "dispute_not_found", `PayPal has no case ${id} for this demo's sandbox seller account. Check the ID: it has to be a case opened against a payment to this seller.`, {
+            paypal: { status: err.status, ...(err.errorName ? { name: err.errorName } : {}), ...(err.debugId ? { debugId: err.debugId } : {}) },
+          });
         }
         throw err;
       }

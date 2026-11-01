@@ -197,11 +197,11 @@ export class Agent {
     });
 
     // The recommendation never names an action PayPal does not offer now (checked in code too).
+    // With no seller action at all it is "wait for PayPal"; missing_information still lists gaps.
     const allowed = input.dispute.allowed_actions;
     const PAYPAL_ACTIONS: readonly string[] = ["provide_evidence", "send_message", "accept_claim"];
-    if (allowed && PAYPAL_ACTIONS.includes(value.recommended_action) && !allowed.includes(value.recommended_action)) {
-      value.recommended_action = allowed.length === 0 ? "wait_for_paypal" : "needs_seller_input";
-    }
+    if (allowed && allowed.length === 0) value.recommended_action = "wait_for_paypal";
+    else if (allowed && PAYPAL_ACTIONS.includes(value.recommended_action) && !allowed.includes(value.recommended_action)) value.recommended_action = "needs_seller_input";
 
     const unverified = [
       ...new Set([
