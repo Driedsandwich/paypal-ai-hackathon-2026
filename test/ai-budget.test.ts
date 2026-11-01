@@ -54,6 +54,21 @@ describe("every model call counts against the daily AI budget (F9)", () => {
   });
 });
 
+describe("budget refusal through the real AI SDK provider", () => {
+  it("a refused first step surfaces as AiBudgetError (so the API answers 429, not 502)", async () => {
+    const usage = { inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 1, text: 1, reasoning: 0 } };
+    let modelCalls = 0;
+    const model = new MockLanguageModelV3({
+      doGenerate: async () => (modelCalls++, { content: [{ type: "text" as const, text: "x" }], finishReason: { unified: "stop" as const, raw: undefined }, usage, warnings: [] }),
+    });
+    const spent = limiter(1);
+    spent.debitModelCall();
+    const err = await withAiBudget(new AiSdkProvider("anthropic", "m", model, { maxOutputTokens: 10 }), spent).complete({ messages: [{ role: "user", content: "hi" }] }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(AiBudgetError);
+    expect(modelCalls).toBe(0);
+  });
+});
+
 describe("AI limits over HTTP (F9)", () => {
   let close: (() => Promise<void>) | undefined;
   afterEach(async () => {
@@ -73,6 +88,13 @@ describe("AI limits over HTTP (F9)", () => {
     expect((await get("/api/health")).body.data.limits.usedToday).toBe(0);
     expect((await post("/api/listings/draft", { item: TEA_ITEM })).status).toBe(200); // allowance still there
     expect((await get("/api/health")).body.data.limits.usedToday).toBe(1);
+  });
+
+  it("a JSON retry that would exceed the daily budget answers 429 daily_cap_reached", async () => {
+    const { post } = await start({ AI_DAILY_CAP: "1" }, { ai: new FakeAiProvider(["{not json"]) });
+    const res = await post("/api/listings/draft", { item: TEA_ITEM });
+    expect(res.status).toBe(429);
+    expect(res.body.error.code).toBe("daily_cap_reached");
   });
 
   it("refuses an address that keeps sending invalid AI requests", async () => {

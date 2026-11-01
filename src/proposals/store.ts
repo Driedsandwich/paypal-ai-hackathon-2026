@@ -210,6 +210,7 @@ export class ProposalStore {
 
   /** The proposal if it exists and belongs to `owner` (other sessions' proposals look absent). */
   get(id: string, owner: string): Proposal | undefined {
+    this.expire();
     const p = this.items.get(id);
     return p && p.owner === owner ? p : undefined;
   }

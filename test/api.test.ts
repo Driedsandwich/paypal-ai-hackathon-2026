@@ -305,9 +305,16 @@ describe("demo sessions (F1)", () => {
     expect((await secure.get("/api/proposals")).headers.get("set-cookie")).toMatch(/; Secure$/);
   });
 
-  it("loading the UI already sets the session cookie", async () => {
-    const { get } = await start();
-    expect((await get("/")).headers.get("set-cookie")).toMatch(/^okuri_sid=/);
+  it("loading the UI already sets the session cookie, but cacheable assets never carry one", async () => {
+    tmp = mkdtempSync(path.join(tmpdir(), "okuri-ui-"));
+    writeFileSync(path.join(tmp, "index.html"), "<!doctype html><div id=root></div>");
+    writeFileSync(path.join(tmp, "app.js"), "console.log(1)");
+    const { base } = await start({ staticDir: tmp });
+    const asset = await fetch(`${base}/app.js`);
+    expect(asset.headers.get("cache-control")).toMatch(/max-age/);
+    expect(asset.headers.get("set-cookie")).toBeNull();
+    expect((await fetch(`${base}/`)).headers.get("set-cookie")).toMatch(/^okuri_sid=/);
+    expect((await fetch(`${base}/invoices`)).headers.get("set-cookie")).toMatch(/^okuri_sid=/);
   });
 
   it("keeps the cookie once set and ignores malformed ones", async () => {

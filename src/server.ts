@@ -162,8 +162,10 @@ export function createApp(options: AppOptions = {}): Server {
       if (url.pathname === "/paypal/return" || url.pathname === "/paypal/cancel") {
         return await handlePayPalReturn(req, res, url, deps, () => deps.limits.takeRead(limitKey(clientAddress(req, deps.settings.trustProxyHops))));
       }
-      // Give the visitor a demo session as soon as the UI loads, before any API call.
-      ensureSession(req, res, isSecureRequest(req, deps.settings.publicBaseUrl, deps.settings.trustProxyHops));
+      // Give the visitor a demo session as soon as the UI loads, before any API call. Only on
+      // the HTML entry (no file extension, served no-cache): cacheable assets must never carry
+      // a Set-Cookie that a shared cache could hand to the next visitor.
+      if (!path.extname(url.pathname)) ensureSession(req, res, isSecureRequest(req, deps.settings.publicBaseUrl, deps.settings.trustProxyHops));
       return serveStatic(deps.staticDir, url.pathname, res);
     } catch (err) {
       return sendError(res, err, deps.log);

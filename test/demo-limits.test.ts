@@ -132,6 +132,22 @@ describe("limits over HTTP (F2)", () => {
     expect((await get("/api/health")).body.data.demoLimits).toMatchObject({ paypalWritesToday: 3, paypalDailyWriteCap: 4 });
   });
 
+  it("approving an expired proposal does not use up any limit", async () => {
+    let now = Date.parse("2026-11-01T10:00:00Z");
+    const { ProposalStore } = await import("../src/proposals/store.js");
+    const { createPayPalExecutor } = await import("../src/proposals/actions.js");
+    const { DemoBuyers } = await import("../src/demo/buyers.js");
+    const pp = sandbox();
+    const proposals = new ProposalStore(createPayPalExecutor(() => pp.client, { buyers: new DemoBuyers([fakeEmail("b1")]) }), { now: () => new Date(now) });
+    const app = await startApp({ paypalConfig: FAKE_CONFIG, paypal: pp.client, proposals, settings: loadSettings({ ...BUYERS, PAYPAL_DAILY_WRITE_CAP: "3" }) });
+    close = app.close;
+    const p = (await app.post("/api/invoices/prepare", { listing: LISTING, buyer: { alias: "Demo buyer 1" } })).body.data.proposal;
+    now += 25 * 3_600_000;
+    const res = await app.post(`/api/proposals/${p.id}/approve`);
+    expect(res.status).toBe(409);
+    expect((await app.get("/api/health")).body.data.demoLimits.paypalWritesToday).toBe(0);
+  });
+
   it("limits PayPal reads per address and caches list reads for 30 seconds", async () => {
     const { get, post, pp } = await start({ PAYPAL_READ_RATE_LIMIT: "3" });
     const lists = () => pp.calls.filter((c) => c.url.includes("/v2/invoicing/invoices?")).length;

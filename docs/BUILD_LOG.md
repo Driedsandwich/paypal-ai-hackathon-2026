@@ -105,9 +105,10 @@ and a PayPal-limits line).
 
 - `npm run typecheck`, `npm test`, `npm run build`, `npm run prepublish-check` pass after
   every commit (Node 22 locally).
-- **Tests: 108 before (9 files), 199 after (16 files).**
+- **Tests: 108 before (9 files), 202 after (16 files).**
 - The built server was started offline (`AI_PROVIDER=fake`, no PayPal) and checked with curl:
-  the page load sets the session cookie, health shows the demo notice and limits, a listing
+  the page load sets the session cookie (only on the HTML entry, never on cacheable assets),
+  health shows the demo notice and limits, a listing
   draft works, `HEAD /paypal/return` returns 200 without a lookup, an unknown token shows
   "Payment not found".
 
