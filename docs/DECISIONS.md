@@ -297,6 +297,7 @@ output cap, no login, name "Okuri", demo sessions, limits, masking, dispute/stat
     chooses it on New item). Disputes are linked to a sale by
     `disputed_transactions[].seller_transaction_id` (or `invoice_number`) when PayPal's list
     returns them; this is **not verified against the sandbox** (the list may omit them).
+    *Extended in pass 3a:* cases known by webhook or by ID too, and capture ids (58, 62).
 51. **Offline demo is opt-in** (`PAYPAL_OFFLINE_DEMO=true`), not automatic without credentials,
     so the pass-1 behaviour (503 + banner) stays. It implements the app's PayPal calls in memory
     (`src/paypal/offline.ts`, `PayPalApi` = the subset of `PayPalClient` the app uses) with one
@@ -352,3 +353,66 @@ output cap, no login, name "Okuri", demo sessions, limits, masking, dispute/stat
     `AI_FALLBACK_MODEL`, `AI_FALLBACK_API_KEY`, `AI_FALLBACK_DAILY_CAP` (all in `.env.example`).
     New routes: `GET /api/journeys`, `POST /api/offline/simulate`. `/api/health` adds
     `paypal.offline`, `countries`, `ai.fallback`, `limits.fallback`, `agStudio.licenseKey`.
+
+## Pass 3a (2026-11-01): dispute discovery
+
+A sandbox case was readable by id but missing from PayPal's dispute list for at least 3
+minutes, and offered no seller action (`test/fixtures/sandbox-dispute-20261101.json`).
+
+58. **Three sources, one registry.** Dispute ids come from PayPal's list, verified
+    `CUSTOMER.DISPUTE.CREATED`/`UPDATED` webhooks, and reads by id (*Open a case by ID* and
+    `GET /api/disputes/{id}`). The registry (`src/journeys/disputes.ts`) is in memory, bounded
+    (2,000 entries, 30 days, oldest dropped first) and shared by all visitors, like the
+    account's dispute list. It keeps reduced data only: summary fields, transaction ids and
+    amounts, action links and `allowed_response_options`; no messages, evidence or buyer
+    objects (those are read fresh for the case view). The offline demo does not use it: each
+    visitor's simulated list is complete and private.
+59. **Merging.** Pages show PayPal's list (page 1, 50, cached 30 s) plus registered cases the
+    list does not return, newest first. Ids that came only from the list are not read one by
+    one when they drop out of it (as before). Cases known from a webhook or by id are read by id
+    on each page load through the 30-second cache, at most 10 per load (newest first); older
+    ones show their last known data. List items without transaction ids keep the ones from an
+    earlier read by id; action links are only taken from reads by id. If the list call fails,
+    registered cases still show with a warning; with none registered, the error is returned as
+    before.
+60. **Not found.** A registered id that PayPal answers 404 for is dropped, but only one hour
+    after it was first registered: a case announced by a verified webhook may not be readable
+    at once (the list lags too, so reads by id might as well).
+61. **Webhook follow-up.** After verification, and only for a new event id, a dispute event
+    whose `resource.dispute_id` is a valid case id registers the id at once; the detail is read
+    by id in the background (one read per id at a time), so PayPal's delivery does not wait up
+    to 15 s for it. A failed read is logged and the id stays registered, so the next page load
+    reads it. Only the id is taken from the event body. Unverified events, redeliveries and
+    other event types register nothing.
+62. **Linking.** A dispute belongs to a sale when a `disputed_transactions[].seller_transaction_id`
+    equals the sale's invoice payment transaction id (`payments.transactions[].payment_id`) or
+    its order capture id; `invoice_number` stays as a fallback. New
+    `SaleRegistry.bySellerTransaction`; the tracking allowlist keeps `byTransaction` (invoice
+    payments only), so tracking rules did not change. A sale with a transaction or capture id is
+    checked even when its invoice is not on the first page of the invoice list. When a sale has
+    several cases, an open one is shown first.
+63. **Open a case by ID** (`POST /api/disputes/open`). The id is trimmed and upper-cased and must
+    look like PayPal's case ids (`PP-` and 1-7 groups of letters/digits, at most 64 characters:
+    `PP-D-27803`, `PP-R-EMU-10195761`, `PP-000-042-663-135`, the simulator's `PP-D-OFF…`);
+    anything else gets 400 before PayPal is called. PayPal 404 or 403 becomes 404
+    `dispute_not_found` with PayPal's status, name and debug_id. Limits: the route counts as a
+    PayPal read (the existing per-address limit, which is how other PayPal reads are limited;
+    they are not per session), plus `DISPUTE_LOOKUP_LIMIT` = 10 lookups per window per session
+    *and* per address (a constant, not env), because each lookup may add to the shared registry.
+64. **No seller action.** When `disputeActions` allows nothing (for example links hold only
+    `self`), the detail, the evidence-pack response and the journey's dispute carry
+    `seller_action_available: false` and a `notice`: "PayPal is reviewing this case. No seller
+    action is available right now." (closed cases: "This case is closed. No seller action is
+    available."; `WAITING_FOR_BUYER_RESPONSE`: "PayPal is waiting for the buyer's response. …").
+    The journey states this only for cases read by id on that page load, because list items
+    carry no action links. The evidence pack and the English reply draft are still built and
+    shown read-only (evidence notes "kept ready, not sent", reply as Copy-for-DM); proposals are
+    still created only for allowed actions (38 unchanged), and the accept-claim button shows
+    only when allowed.
+65. **Recommendation follows PayPal.** New `recommended_action` value `wait_for_paypal`. In code,
+    after the model answers: no allowed action → `wait_for_paypal` (missing information is still
+    listed); a PayPal action that is not allowed → `needs_seller_input`. The prompt says the same.
+66. **No new env names.** New route `POST /api/disputes/open`; `GET /api/disputes` rows add
+    `in_paypal_list`, `sources` and `sale_id`, the response adds `warnings`; `GET
+    /api/disputes/{id}` adds `seller_action_available`, `notice` and `sale_id`; the journey's
+    `dispute` adds `in_paypal_list` and, when known, `seller_action_available` and `notice`.

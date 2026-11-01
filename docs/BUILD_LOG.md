@@ -258,3 +258,75 @@ screen, as required); AG Studio widgets keep AG Studio's own title/axis typograp
    marker, or should it use another field?
 3. Do you have an AG Studio licence key for `AG_STUDIO_LICENSE`, or is the trial mark fine?
 4. Keep Reject in the journey callouts (A1 pairing) or match S3's Review + Approve only?
+
+## Pass 3a (dispute discovery): 2026-11-01
+
+A real sandbox test (recorded in `test/fixtures/sandbox-dispute-20261101.json`) showed that a
+buyer-opened dispute could be read by id (`GET /v1/customer/disputes/{id}`) but did not appear
+in the list endpoint for at least 3 minutes, moved from INQUIRY to UNDER_REVIEW/CHARGEBACK
+within minutes, and only ever had a `self` link (no seller actions). The app found disputes
+from the list only, so the case was invisible. Branch `claude/build-v1`, small commits, nothing
+pushed, remotes unchanged, no dependencies added, no new env names.
+
+### Result
+
+- `npm run typecheck`, `npm test`, `npm run build`, `npm run prepublish-check` pass after
+  every commit (Node 22 locally).
+- **Tests: 215 before (18 files), 233 after (19 files).** New: `test/dispute-discovery.test.ts`
+  (17 tests, using the fixture) and one test in `test/agent.test.ts`. No existing test changed.
+
+### What changed
+
+| Item | Change | Where |
+| --- | --- | --- |
+| 1 Registry | Bounded in-memory registry of known dispute ids (2,000 entries, 30 days), fed by PayPal's list, verified `CUSTOMER.DISPUTE.CREATED`/`UPDATED` webhooks (detail read by id in the background after verification), successful reads by id, and the new *Open a case by ID*. Stores reduced data only (no messages, evidence or buyer objects). Not used in the offline demo. | `src/journeys/disputes.ts`, `src/server.ts` |
+| 1 Discovery | `GET /api/disputes` and `/api/journeys` show PayPal's list plus registered cases the list does not return yet, read by id through the 30 s cache (at most 10 per page load). A failing list call no longer hides registered cases (warning instead). Rows say `in_paypal_list` and the linked `sale_id`. | `src/journeys/disputes.ts`, `src/http/api.ts`, `src/paypal/read-cache.ts` |
+| 1 Open by ID | `POST /api/disputes/open { dispute_id }`: format check (`PP-…`, trimmed, upper-cased) before any PayPal call, read from PayPal, register; 404 `dispute_not_found` with PayPal's debug_id. Counts as a PayPal read (per address) plus 10 lookups per 10 minutes per session and per address. UI: input and button at the top of Disputes. | `src/http/api.ts`, `src/limits/demo-limits.ts`, `web/src/views/Disputes.tsx` |
+| 2 Linking | A dispute belongs to a sale when `disputed_transactions[].seller_transaction_id` equals the invoice payment's transaction id or the order's capture id (invoice number kept as a fallback). Transaction ids from a read by id are kept when list items lack them. The journey shows the dispute branch, and an open case wins over a resolved one. | `src/journeys/disputes.ts`, `src/journeys/sales.ts`, `src/journeys/journeys.ts` |
+| 3 No seller action | `seller_action_available` and `notice` on the dispute detail, the evidence pack response and the journey's dispute (journey: only when the case was just read by id). Notice: "PayPal is reviewing this case. No seller action is available right now." (own sentences for closed and waiting-for-buyer cases). The evidence pack and the English reply draft are still built, read-only; no proposals for actions PayPal does not offer (pass-2a rule unchanged); the recommendation becomes `wait_for_paypal`. UI: notice box, "(read-only)" button label, evidence notes shown as "kept ready, not sent", reply as Copy-for-DM, accept-claim button only when allowed. | `src/paypal/dispute-actions.ts`, `src/http/dto.ts`, `src/agent/tasks.ts`, `web/src/views/` |
+| 5 README | Judge walkthrough step 6 (open the sandbox case, paste its case ID; list delay), API table, webhook note, architecture. | `README.md` |
+| Fixes on the way | The dispute detail was never shown on phones (missing `has-selection`, pre-existing); the case form now fills in the linked journey's invoice id and tracking once the journey loads; long status tags wrap instead of being cut off. | `web/src/views/Disputes.tsx`, `web/src/styles.css` |
+
+### How I checked things
+
+- Tests drive the HTTP API against a fake PayPal that serves the fixture by id and a lagging
+  list (empty first, then a summary without transaction ids): registering by id, by webhook
+  (including redelivery, forged events, invalid ids, a failing follow-up read), linking by
+  invoice transaction id and by capture id, not linking foreign payments, the no-action state
+  (pack + reply draft, no proposals, accept-claim refused, no PayPal writes), the lookup
+  limits per session and per address, list failure, the read-by-id cap, the 404 grace period
+  and the offline demo's privacy.
+- UI: the built server with a fake PayPal holding the fixture, driven in headless Chrome over
+  the DevTools protocol at 1440×900 and 390×844: open the case by ID (typed in lower case with
+  spaces), the notice, the journey branch, the read-only pack, the not-found message; no
+  console errors. The offline demo's Disputes view was checked too (actions offered, no
+  notice). The scripts and screenshots were temporary and are not committed;
+  `docs/media/` was not regenerated.
+
+### Not done, or only partly, and why
+
+- **Still no live sandbox run** from this environment (no credentials). Not verified: whether
+  list items carry `disputed_transactions` (handled either way), that an invoice payment's
+  `payment_id` equals the dispute's `seller_transaction_id` (expected; the fixture's id has
+  that shape), what a dispute webhook's `resource` holds beyond `dispute_id` (only the id is
+  used), whether PayPal answers 404 or 403 for a case of another merchant (both map to
+  "not found"), and how long the list lag lasts.
+- **The registry is in memory.** After a restart of the free instance, cases that PayPal's list
+  does not return yet are forgotten until a webhook arrives or someone opens them by ID again.
+- `GET /api/disputes` alone does not rebuild sales from invoice markers after a restart (the
+  journeys read does; the UI loads journeys on start), so a direct API call may show a case
+  without its `sale_id` until then.
+- The journey's no-action notice appears only for cases read by id on that page load; for
+  cases in PayPal's list the journey keeps "Build evidence pack" (list items carry no action
+  links), and the case view shows the notice.
+- The chat agent's `list_disputes` still reads PayPal's list only, and `get_dispute` does not
+  register ids.
+- Dispute updates add no activity entries on the journey (only "Buyer opened a dispute").
+
+### Open questions for you
+
+1. Is 10 case lookups per 10 minutes per browser and per address right for the hosted demo?
+2. Please set up the sandbox webhook (`PAYPAL_WEBHOOK_ID`, with the two dispute events) on the
+   hosted demo: then new cases appear without pasting the ID.
+3. Registered cases that belong to no sale of this demo are listed on Disputes (as the PayPal
+   list already did). Keep that, or show only cases linked to this demo's sales?
