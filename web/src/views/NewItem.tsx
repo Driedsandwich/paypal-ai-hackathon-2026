@@ -116,7 +116,7 @@ export function NewItemView({ health, onProposal }: { health: Health; onProposal
               </div>
             )}
             <div>
-              <label>Currency (ISO code)</label>
+              <label>Currency (PayPal code; JPY, HUF, TWD: whole numbers only)</label>
               <input value={price.currency_code} maxLength={3} onChange={(e) => setPrice({ ...price, currency_code: e.target.value.toUpperCase() })} />
             </div>
             <div>

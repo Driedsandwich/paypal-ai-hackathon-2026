@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { moneyProblem, PAYPAL_CURRENCIES } from "../money.js";
 
 // ---------- Inputs (validated at the HTTP boundary) ----------
 
@@ -15,16 +16,31 @@ export const JpItemSchema = z.object({
 });
 export type JpItem = z.infer<typeof JpItemSchema>;
 
+/** Money as PayPal returns it (read data: any currency PayPal reports, up to 2 decimals). */
 export const MoneySchema = z.object({
   currency_code: z.string().regex(/^[A-Z]{3}$/, "ISO 4217 code, e.g. USD"),
   value: z.string().regex(/^\d{1,10}(\.\d{1,2})?$/, "decimal amount, e.g. 80.00"),
 });
 
+/**
+ * A price the seller (or the chat agent) wants to bill: a PayPal currency, and the right
+ * precision for it (no decimals for HUF, JPY, TWD; at most 2 otherwise), greater than zero.
+ */
+export const SellerMoneySchema = z
+  .object({
+    currency_code: z.string().regex(/^[A-Z]{3}$/, "ISO 4217 code, e.g. USD").describe(`One of ${PAYPAL_CURRENCIES.join(", ")}`),
+    value: z.string().max(20).describe("Amount as a string; whole number for HUF, JPY and TWD, otherwise up to 2 decimals"),
+  })
+  .superRefine((m, ctx) => {
+    const problem = moneyProblem(m.value, m.currency_code);
+    if (problem) ctx.addIssue({ code: "custom", path: [problem.field], message: problem.message });
+  });
+
 /** The part of a listing needed to bill a buyer. */
 export const ListingForSaleSchema = z.object({
   title: z.string().trim().min(1).max(127),
   description: z.string().max(1000).default(""),
-  price: MoneySchema,
+  price: SellerMoneySchema,
   quantity: z.number().int().positive().max(999).default(1),
 });
 export type ListingForSale = z.infer<typeof ListingForSaleSchema>;

@@ -8,6 +8,7 @@ import type { AppSettings } from "../config.js";
 import { DEMO_ITEMS } from "../demo/items.js";
 import type { EventCategory, EventLog } from "../events/log.js";
 import type { AiLimiter } from "../limits/rate-limit.js";
+import { showMoney } from "../money.js";
 import { carrierFor } from "../paypal/carriers.js";
 import type { PayPalClient } from "../paypal/client.js";
 import type { PayPalConfig } from "../paypal/config.js";
@@ -148,12 +149,12 @@ const ROUTES: Route[] = [
       const body = PrepareSchema.parse(await readJsonBody(req, MAX_API_BODY));
       if (deps.settings.paymentPath === "order") {
         const prepared = await deps.agent.preparePaymentLink(body.listing);
-        const proposal = deps.proposals.propose("create_payment_link", `Create payment link for ${body.listing.price.currency_code} ${body.listing.price.value}: ${body.listing.title}`, prepared.payload);
+        const proposal = deps.proposals.propose("create_payment_link", `Create payment link for ${showMoney(body.listing.price)}: ${body.listing.title}`, prepared.payload);
         return ok(res, { path: "order", proposal, buyer_message: prepared.buyer_message, generated_by: prepared.generated_by });
       }
       if (!body.buyer) throw new HttpError(400, "invalid_input", "buyer.email is required on the invoice path");
       const prepared = await deps.agent.prepareInvoice(body.listing, body.buyer);
-      const proposal = deps.proposals.propose("create_and_send_invoice", `Send invoice for ${body.listing.price.currency_code} ${body.listing.price.value}: ${body.listing.title}`, prepared.payload);
+      const proposal = deps.proposals.propose("create_and_send_invoice", `Send invoice for ${showMoney(body.listing.price)}: ${body.listing.title}`, prepared.payload);
       ok(res, { path: "invoice", proposal, buyer_message: prepared.buyer_message, generated_by: prepared.generated_by });
     },
   },
@@ -164,7 +165,7 @@ const ROUTES: Route[] = [
     handler: async ({ req, res, deps }) => {
       const body = PrepareSchema.parse(await readJsonBody(req, MAX_API_BODY));
       const prepared = await deps.agent.preparePaymentLink(body.listing);
-      const proposal = deps.proposals.propose("create_payment_link", `Create payment link for ${body.listing.price.currency_code} ${body.listing.price.value}: ${body.listing.title}`, prepared.payload);
+      const proposal = deps.proposals.propose("create_payment_link", `Create payment link for ${showMoney(body.listing.price)}: ${body.listing.title}`, prepared.payload);
       ok(res, { path: "order", proposal, buyer_message: prepared.buyer_message, generated_by: prepared.generated_by });
     },
   },

@@ -4,7 +4,8 @@ import { carrierFor } from "../paypal/carriers.js";
 import type { PayPalClient } from "../paypal/client.js";
 import type { Invoice } from "../paypal/types.js";
 import type { ProposalStore } from "../proposals/store.js";
-import { MoneySchema } from "./schemas.js";
+import { showMoney } from "../money.js";
+import { SellerMoneySchema } from "./schemas.js";
 import { buildInvoicePayload, buildOrderPayload, type AgentConfig } from "./tasks.js";
 
 // Agent tools for the free-chat entry point. @paypal/agent-toolkit's AI SDK adapter
@@ -112,7 +113,7 @@ export function agentTools(deps: ToolDeps): AiToolSpec[] {
   const sale = z.object({
     item_title: z.string().min(1).max(127),
     description: z.string().max(1000).optional(),
-    price: MoneySchema,
+    price: SellerMoneySchema,
     quantity: z.number().int().min(1).max(999).optional(),
     subject: z.string().min(3).max(200),
     note: z.string().min(10).max(1000),
@@ -122,14 +123,14 @@ export function agentTools(deps: ToolDeps): AiToolSpec[] {
       tool("create_invoice", "Propose creating and sending a PayPal invoice to a buyer. The seller must approve.", sale.extend({ buyer_email: z.email() }), async (i) => {
         const listing = { title: i.item_title, description: i.description ?? "", price: i.price, quantity: i.quantity ?? 1 };
         const payload = buildInvoicePayload(listing, { email: i.buyer_email }, { subject: i.subject, note: i.note }, deps.agentConfig.sellerBusinessName);
-        return pending(proposals.propose("create_and_send_invoice", `Send invoice for ${i.price.currency_code} ${i.price.value}: ${i.item_title}`, payload));
+        return pending(proposals.propose("create_and_send_invoice", `Send invoice for ${showMoney(i.price)}: ${i.item_title}`, payload));
       }),
     );
   } else {
     tools.push(
       tool("create_order", "Propose creating a PayPal payment link (Orders v2). The seller must approve.", sale, async (i) => {
         const listing = { title: i.item_title, description: i.description ?? "", price: i.price, quantity: i.quantity ?? 1 };
-        return pending(proposals.propose("create_payment_link", `Create payment link for ${i.price.currency_code} ${i.price.value}: ${i.item_title}`, buildOrderPayload(listing, deps.agentConfig)));
+        return pending(proposals.propose("create_payment_link", `Create payment link for ${showMoney(i.price)}: ${i.item_title}`, buildOrderPayload(listing, deps.agentConfig)));
       }),
     );
   }

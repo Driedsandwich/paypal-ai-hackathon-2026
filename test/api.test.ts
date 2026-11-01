@@ -277,3 +277,17 @@ describe("client address behind a proxy (TRUST_PROXY_HOPS)", () => {
     expect((await post("/api/listings/draft", { item: TEA_ITEM }, as("198.51.100.2"))).status).toBe(200);
   });
 });
+
+describe("money validation over HTTP", () => {
+  it("rejects a JPY amount with decimals before creating a proposal", async () => {
+    const pp = sandbox();
+    const { post, get } = await start({ paypalConfig: FAKE_CONFIG, paypal: pp.client, settings: loadSettings({ PAYMENT_PATH: "order" }) });
+    const bad = await post("/api/invoices/prepare", { listing: { ...LISTING, price: { currency_code: "JPY", value: "100.50" } } });
+    expect(bad.status).toBe(400);
+    expect(bad.body.error.issues.join(" ")).toMatch(/listing\.price\.value: JPY has no decimals/);
+    expect((await get("/api/proposals")).body.data).toEqual([]);
+    const good = await post("/api/invoices/prepare", { listing: { ...LISTING, price: { currency_code: "JPY", value: "12000" } } });
+    expect(good.body.data.proposal.payload.order.purchase_units[0].amount.value).toBe("12000");
+    expect(good.body.data.proposal.title).toMatch(/JPY 12000/);
+  });
+});

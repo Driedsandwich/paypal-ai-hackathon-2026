@@ -1,5 +1,6 @@
 import { renderTextPdf } from "../docs/simple-pdf.js";
 import type { AiProvider } from "../ai/provider.js";
+import { formatMinor, multiplyMinor, normalizeAmount, toMinor, usdFromJpy } from "../money.js";
 import { carrierFor } from "../paypal/carriers.js";
 import type { CreateOrderRequest, DisputeEvidence, InvoiceDraft } from "../paypal/types.js";
 import type {
@@ -96,10 +97,6 @@ If something important is missing, list it in missing_information and set recomm
 - evidence_notes: notes for PayPal explaining the evidence (max 2000 characters).
 - recommended_action: provide_evidence when shipment proof exists for an item-not-received case; send_message when the case is still an inquiry; accept_claim only if the seller notes say they want to refund.`;
 
-function money(value: number): string {
-  return (Math.round(value * 100) / 100).toFixed(2);
-}
-
 export class Agent {
   constructor(
     private readonly ai: AiProvider,
@@ -121,7 +118,7 @@ export class Agent {
       source: item,
       price: {
         jpy: item.price_jpy,
-        usd: money(item.price_jpy / fx),
+        usd: usdFromJpy(item.price_jpy, fx),
         fx_jpy_per_usd: fx,
         is_estimate: true,
         note: `Estimate at ${fx} JPY per USD. Check the current rate and add shipping before you bill.`,
@@ -256,6 +253,8 @@ export function buildInvoicePayload(
   message: { subject: string; note: string },
   sellerBusinessName?: string,
 ): CreateAndSendInvoicePayload {
+  const currency = listing.price.currency_code;
+  const unit = normalizeAmount(listing.price.value, currency); // throws MoneyError if invalid
   const invoice: InvoiceDraft = {
     detail: {
       currency_code: listing.price.currency_code,
@@ -269,7 +268,7 @@ export function buildInvoicePayload(
         name: listing.title.slice(0, 200),
         ...(listing.description ? { description: listing.description.slice(0, 1000) } : {}),
         quantity: String(listing.quantity),
-        unit_amount: { currency_code: listing.price.currency_code, value: listing.price.value },
+        unit_amount: { currency_code: currency, value: unit },
         unit_of_measure: "QUANTITY",
       },
     ],
@@ -282,7 +281,10 @@ export function buildOrderPayload(
   listing: ListingForSale,
   config: Pick<AgentConfig, "publicBaseUrl" | "sellerBusinessName">,
 ): CreatePaymentLinkPayload {
-  const unit = Number(listing.price.value);
+  const currency = listing.price.currency_code;
+  const unitMinor = toMinor(listing.price.value, currency); // throws MoneyError if invalid
+  const unit = formatMinor(unitMinor, currency);
+  const total = formatMinor(multiplyMinor(unitMinor, listing.quantity), currency);
   const base = config.publicBaseUrl.replace(/\/+$/, "");
   const order: CreateOrderRequest = {
     intent: "CAPTURE",
@@ -290,15 +292,15 @@ export function buildOrderPayload(
       {
         description: listing.title.slice(0, 127),
         amount: {
-          currency_code: listing.price.currency_code,
-          value: money(unit * listing.quantity),
-          breakdown: { item_total: { currency_code: listing.price.currency_code, value: money(unit * listing.quantity) } },
+          currency_code: currency,
+          value: total,
+          breakdown: { item_total: { currency_code: currency, value: total } },
         },
         items: [
           {
             name: listing.title.slice(0, 127),
             quantity: String(listing.quantity),
-            unit_amount: { currency_code: listing.price.currency_code, value: listing.price.value },
+            unit_amount: { currency_code: currency, value: unit },
             category: "PHYSICAL_GOODS",
           },
         ],
