@@ -44,7 +44,7 @@ export function loadSettings(env: NodeJS.ProcessEnv = process.env): AppSettings 
     publicBaseUrl: (env.PUBLIC_BASE_URL ?? "").trim() || `http://localhost:${port}`,
     paymentPath: parsePaymentPath(env.PAYMENT_PATH),
     aiProvider: parseAiProviderName(env.AI_PROVIDER),
-    aiMaxOutputTokens: num(env, "AI_MAX_OUTPUT_TOKENS", 1200, 100, 8000),
+    aiMaxOutputTokens: num(env, "AI_MAX_OUTPUT_TOKENS", 2000, 100, 8000),
     aiRateLimitPerIp: num(env, "AI_RATE_LIMIT_PER_IP", 20, 1, 10_000),
     aiRateLimitWindowMinutes: num(env, "AI_RATE_LIMIT_WINDOW_MINUTES", 10, 1, 1440),
     aiDailyCap: num(env, "AI_DAILY_CAP", 300, 1, 1_000_000),

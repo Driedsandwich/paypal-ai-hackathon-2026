@@ -20,6 +20,19 @@ export const DEFAULT_MODELS: Record<Exclude<AiProviderName, "fake">, string> = {
   openai: "gpt-5.4-mini",
 };
 
+/** Claude models that accept server-side refusal fallbacks (`fallbacks: "default"`). */
+const ANTHROPIC_FALLBACK_MODELS = new Set(["claude-opus-5-5", "claude-opus-5", "claude-fable-5-1", "claude-sonnet-5-5"]);
+
+/**
+ * Provider-specific options. Anthropic: low effort (short, well-specified tasks; thinking
+ * tokens count toward the output cap) and, where supported, server-side fallback when a
+ * request is declined by a safety classifier.
+ */
+export function providerOptionsFor(name: AiProviderName, modelId: string) {
+  if (name !== "anthropic") return undefined;
+  return { anthropic: { effort: "low" as const, ...(ANTHROPIC_FALLBACK_MODELS.has(modelId) ? { fallbacks: "default" as const } : {}) } };
+}
+
 export function parseAiProviderName(value: string | undefined): AiProviderName {
   const v = (value ?? "").trim().toLowerCase();
   if (v === "") return "fake";
@@ -31,7 +44,7 @@ export function parseAiProviderName(value: string | undefined): AiProviderName {
  * Picks a provider from AI_PROVIDER / AI_MODEL / AI_API_KEY.
  * Empty or "fake" selects the offline provider, which needs no key and no network.
  */
-export function createAiProviderFromEnv(env: NodeJS.ProcessEnv = process.env, maxOutputTokens = 1200): AiProvider {
+export function createAiProviderFromEnv(env: NodeJS.ProcessEnv = process.env, maxOutputTokens = 2000): AiProvider {
   const name = parseAiProviderName(env.AI_PROVIDER);
   if (name === "fake") return new FakeAiProvider([offlineReply]);
   const apiKey = env.AI_API_KEY ?? "";
@@ -43,5 +56,6 @@ export function createAiProviderFromEnv(env: NodeJS.ProcessEnv = process.env, ma
       : name === "google"
         ? createGoogleGenerativeAI({ apiKey })(modelId)
         : createOpenAI({ apiKey })(modelId);
-  return new AiSdkProvider(name, modelId, model, { maxOutputTokens });
+  const providerOptions = providerOptionsFor(name, modelId);
+  return new AiSdkProvider(name, modelId, model, { maxOutputTokens, ...(providerOptions ? { providerOptions } : {}) });
 }

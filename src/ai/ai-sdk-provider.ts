@@ -1,6 +1,8 @@
 import { generateText, stepCountIs, tool, type LanguageModel, type ModelMessage, type ToolSet } from "ai";
 import type { AiCompletionRequest, AiCompletionResult, AiProvider, AiToolCallRecord } from "./provider.js";
 
+type ProviderOptions = NonNullable<Parameters<typeof generateText>[0]["providerOptions"]>;
+
 /**
  * Real model through the Vercel AI SDK (ai@6). One class for every vendor;
  * the vendor-specific LanguageModel is created in ai/index.ts.
@@ -11,7 +13,7 @@ export class AiSdkProvider implements AiProvider {
     readonly name: string,
     readonly model: string,
     private readonly languageModel: LanguageModel,
-    private readonly defaults: { maxOutputTokens: number },
+    private readonly defaults: { maxOutputTokens: number; providerOptions?: ProviderOptions },
   ) {}
 
   async complete(request: AiCompletionRequest): Promise<AiCompletionResult> {
@@ -46,6 +48,7 @@ export class AiSdkProvider implements AiProvider {
       messages,
       maxOutputTokens: Math.min(request.maxTokens ?? this.defaults.maxOutputTokens, this.defaults.maxOutputTokens),
       ...(tools ? { tools, stopWhen: stepCountIs(request.maxSteps ?? 5) } : {}),
+      ...(this.defaults.providerOptions ? { providerOptions: this.defaults.providerOptions } : {}),
     });
     return {
       text: result.text,
