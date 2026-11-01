@@ -1,7 +1,8 @@
 import { useMemo } from "react";
 import { AgStudio } from "ag-studio-react";
 import { AgStudioLicenseManager, studioTheme } from "ag-studio";
-import { money, type Journey } from "../api";
+import { money } from "../api";
+import { byCountry, insightCards, insightRows, ledgerTracks, studioFrameHeight, type InsightRow } from "../insights-data";
 import type { ViewProps } from "../App";
 
 // Insights with AG Studio (AG Grid's embedded analytics): revenue by buyer country, unpaid
@@ -25,44 +26,10 @@ function applyLicense(key: string | undefined): void {
   licenseApplied = true;
 }
 
-interface Row {
-  sale: string;
-  country: string;
-  revenue_usd: number;
-  unpaid_usd: number;
-  days_outstanding: number;
-  disputed: number;
-  paid: number;
-  invoice: string;
-  item: string;
-}
-
-/** One row per USD sale (other currencies are left out of the USD totals). */
-export function insightRows(journeys: Journey[], now = Date.now()): Row[] {
-  return journeys
-    .filter((j) => j.amount?.currency_code === "USD")
-    .map((j) => {
-      const paid = j.stage === "paid" || j.stage === "shipped" || j.stage === "delivered";
-      const billed = j.stage !== "draft";
-      const value = Number(j.amount!.value);
-      return {
-        sale: j.id,
-        country: j.country_name,
-        revenue_usd: paid ? value : 0,
-        unpaid_usd: billed && !paid ? value : 0,
-        days_outstanding: billed && !paid ? Math.max(0, Math.floor((now - Date.parse(j.created_at)) / 86_400_000)) : 0,
-        disputed: j.dispute ? 1 : 0,
-        paid: paid ? 1 : 0,
-        invoice: j.invoice_number ?? j.id,
-        item: j.title_en,
-      };
-    });
-}
-
 const usd = { format: new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }) };
 const title = (text: string) => ({ enabled: true, text, typography: { fontFamily: TITLE_FONT, fontSize: 18, fontWeight: 700 }, color: INK });
 
-function studioData(rows: Row[]) {
+function studioData(rows: InsightRow[]) {
   return {
     sources: [
       {
@@ -94,7 +61,8 @@ function studioData(rows: Row[]) {
   };
 }
 
-const INITIAL_STATE = {
+function initialState(ledgerYSpan: number) {
+  return {
   selectedPageId: "insights",
   pages: [
     {
@@ -132,7 +100,7 @@ const INITIAL_STATE = {
         revenue: { xTrack: 0, yTrack: 0, xSpan: 10, ySpan: 18 },
         unpaid: { xTrack: 10, yTrack: 0, xSpan: 8, ySpan: 18 },
         rate: { xTrack: 18, yTrack: 0, xSpan: 6, ySpan: 18 },
-        ledger: { xTrack: 0, yTrack: 18, xSpan: 24, ySpan: 15 },
+        ledger: { xTrack: 0, yTrack: 18, xSpan: 24, ySpan: ledgerYSpan },
       },
       filter: {
         widget: {
@@ -142,7 +110,8 @@ const INITIAL_STATE = {
       },
     },
   ],
-};
+  };
+}
 
 const THEME = studioTheme.withParams({
   backgroundColor: BG,
@@ -194,10 +163,9 @@ export function InsightsView({ health, data, dataError }: ViewProps) {
   applyLicense(health.agStudio.licenseKey);
   const rows = useMemo(() => insightRows(data?.journeys ?? []), [data]);
   const studio = useMemo(() => studioData(rows), [rows]);
-  const paid = rows.reduce((n, r) => n + r.paid, 0);
-  const disputed = rows.reduce((n, r) => n + r.disputed, 0);
-  const revenue = rows.reduce((n, r) => n + r.revenue_usd, 0);
-  const unpaid = rows.reduce((n, r) => n + r.unpaid_usd, 0);
+  const tracks = ledgerTracks(byCountry(rows).size);
+  const state = useMemo(() => initialState(tracks), [tracks]);
+  const { paid, disputed, revenue, unpaid } = insightCards(rows);
 
   return (
     <div className="insights">
@@ -216,13 +184,13 @@ export function InsightsView({ health, data, dataError }: ViewProps) {
       {data && rows.length === 0 && <p className="empty-note">No data yet. Insights appear once a sale has an invoice.</p>}
       {data && rows.length > 0 && (
         <div className="studio-scroll">
-          <div className="studio-frame">
+          <div className="studio-frame" style={{ height: studioFrameHeight(tracks) }}>
             <AgStudio
-              key={rows.length}
+              key={`${rows.length}-${tracks}`}
               style={{ height: "100%", width: "100%" }}
               mode="view"
               data={studio as never}
-              initialState={INITIAL_STATE as never}
+              initialState={state as never}
               theme={THEME}
               panels={{ view: { left: [], right: [] } }}
               layout={{ backgroundColor: BG, widgetBackgroundColor: PAPER, widgetBorderColor: RULE, widgetBorderRadius: 3 } as never}
