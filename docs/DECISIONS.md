@@ -226,7 +226,7 @@ each fix; these are the choices made while implementing them.
     AI note in `invoice.detail.note`; the AI no longer writes a subject.
 38. **Dispute actions (F11).** send-message needs stage `INQUIRY` and the send-message link;
     provide-evidence needs its link; accept-claim needs its link or
-    `allowed_response_options.accept_claim`. The OpenAPI file names no rel values, so a link
+    `allowed_response_options.accept_claim` (*changed in pass 4:* the link is required, see 68). The OpenAPI file names no rel values, so a link
     counts when its rel is the action name (`send_message` or `send-message`) or its href path
     ends with the action path. The executor re-reads the dispute before each dispute write and
     marks the proposal `obsolete` when the action is gone; the approved payload is never
@@ -416,3 +416,50 @@ minutes, and offered no seller action (`test/fixtures/sandbox-dispute-20261101.j
     `in_paypal_list`, `sources` and `sale_id`, the response adds `warnings`; `GET
     /api/disputes/{id}` adds `seller_action_available`, `notice` and `sale_id`; the journey's
     `dispute` adds `in_paypal_list` and, when known, `seller_action_available` and `notice`.
+
+## Pass 4 (2026-11-01): after the first Render deploy
+
+The first Render deploy exited at startup because `AI_API_KEY` was not set yet. A live check
+then passed walkthrough steps 1 to 3 on the real sandbox (draft listing, prepare invoice,
+approve, PayPal sent the invoice).
+
+67. **A missing AI key never stops the server.** New `createAiSetupFromEnv` (used by
+    `src/server.ts`): primary key missing (empty or blank) → the offline (rule-based) provider
+    answers, the fallback is not used (so every answer comes from one clearly labelled source),
+    a banner line says "AI is not configured: AI_API_KEY is not set for AI_PROVIDER=…, so the
+    offline AI answers … Set the key and restart." (same banner list as the PayPal notice), and
+    `/api/health` `ai` adds `configured: false` and `warnings`. Only the fallback key missing →
+    the primary runs without a fallback and `ai.warnings` says so (no banner: answers still come
+    from the real model). Both lines are logged at startup. An unknown `AI_PROVIDER` value still
+    stops the server (a typo should be fixed, not hidden). `createAiProviderFromEnv` keeps
+    throwing for direct callers. No new env names.
+68. **Seller actions only from what PayPal offers (supersedes the accept-claim part of 38).**
+    Every action needs its HATEOAS link, accept-claim included. `allowed_response_options`,
+    where present, can only narrow: if it is there, `accept_claim` must be listed in it, and an
+    explicit empty `accept_claim_types` list means not allowed; absent means no extra
+    restriction. Reason: on the real sandbox case (fixture, links only `self`) the app reported
+    accept-claim as allowed; the only path to that was `allowed_response_options.accept_claim`
+    counting on its own. Tests: the fixture as recorded and with `allowed_response_options`
+    added, at INQUIRY and CHARGEBACK, unit and over HTTP (no proposal, 409, no PayPal write).
+69. **Shipping on invoices.** `listing.shipping` (optional, `{ currency_code, value }`) must be
+    in the price's currency and follows the pass-2a precision rules (no decimals for JPY, HUF,
+    TWD; at most 2 otherwise; greater than zero); errors are 400 before a proposal exists. The
+    invoice gets Invoicing v2 `amount.breakdown.shipping.amount`; items are unchanged, so
+    PayPal adds the shipping to the total. Payment links (order path) put it in
+    `purchase_units[0].amount.breakdown.shipping` and in the total, so it is never dropped
+    silently. The sale's `amount` (journeys, Insights) is now the billed total, item total plus
+    shipping, computed in integer minor units (`listingTotals`). The offline simulator adds the
+    shipping to the invoice total. UI: an optional Shipping field on New item (sent only when
+    greater than zero); the approval preview and the journey callouts show a Shipping row and
+    "Item … + Shipping …"; the draft journey's callout shows the same line.
+70. **Insights by-country Disputes column.** The column had the right sums (they were in the
+    page), but the ledger widget was too short for six countries plus the total row, so AG
+    Grid showed a vertical scrollbar that sat over the right edge of the last column, where the
+    right-aligned numbers are. The ledger's height now follows the number of countries
+    (`ledgerTracks`, frame height grows with it), so no scrollbar appears. The row maths moved to
+    `web/src/insights-data.ts` (pure, unit-tested): the per-country sums of revenue, unpaid and
+    disputes equal the cards above (paid revenue, unpaid, "n of m paid sales").
+71. **README "AI tools used".** Runtime: Claude (Anthropic API) primary, Gemini (Google AI
+    Studio API) fallback. Build: Claude Code for implementation and fixes, OpenAI Codex for the
+    visual design mockups and an independent code review (as stated by the owner). Hosted URL
+    `https://okuri.onrender.com` at the top with the about-a-minute wake-up note.

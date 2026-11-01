@@ -100,6 +100,7 @@ repository was created during that period. Dated log of the work (newest last):
 | 2026-11-01 | Pass 2a (review fixes for the public demo): per-visitor demo sessions and proposal ownership; recipients only from the demo-buyer allowlist (by alias); public DTOs and email masking; limits on proposals, approvals, PayPal reads/writes, webhooks, seeding and execution; verified return page; deadlines and an "unknown" outcome for timed-out writes; AI budget per model call; redaction of contact details before AI calls; PayPal's standard reminders with a Copy-for-DM text; dispute actions only when PayPal allows them; currency precision; 3-day webhook de-duplication. |
 | 2026-11-01 | Pass 2: visual design (S3 "transaction journey" structure with the A1 "paper & seal" look; layout table in `docs/design/LAYOUT_TABLE.md`); journeys API and sale registry; Approvals inbox; offline PayPal simulator (`PAYPAL_OFFLINE_DEMO`); tracking only for sales this demo created; AI fallback provider; Insights with AG Studio; Render Blueprint (`render.yaml`); screenshots in `docs/media/`. |
 | 2026-11-01 | Pass 3a: dispute discovery. Cases are found from PayPal's list, verified dispute webhooks and *Open a case by ID* (a bounded in-memory registry), linked to their sale by the disputed transaction (invoice payment or order capture), with a clear state when PayPal offers the seller no action; tests use a recorded sandbox dispute shape. |
+| 2026-11-01 | Pass 4 (after the first Render deploy): a missing AI key no longer stops startup (offline AI + banner, or no fallback); accept-claim only when PayPal offers its link; optional shipping on invoices ("Item + Shipping"); Insights' by-country Disputes column visible; README with the hosted URL and "AI tools used". |
 
 ## Setup
 
@@ -199,7 +200,7 @@ small DTOs with email addresses masked. Limits answer 429 (or 503 when busy) wit
 | --- | --- |
 | `GET /api/health` (also `/health`) | Configuration status, AI model, limits, banner messages |
 | `POST /api/listings/draft` | AI: Japanese item → English listing (rate limited) |
-| `POST /api/invoices/prepare` | AI: buyer note + invoice (or payment link) **proposal** for a demo buyer |
+| `POST /api/invoices/prepare` | AI: buyer note + invoice (or payment link) **proposal** for a demo buyer; optional `listing.shipping` (same currency as the price) becomes the invoice's shipping charge |
 | `POST /api/payment-links/prepare` | AI: Orders v2 payment link **proposal** for a demo buyer |
 | `GET /api/invoices`, `GET /api/invoices/{id}` | Live invoices from PayPal |
 | `POST /api/invoices/nudge` | AI: **proposals** to send PayPal's standard reminder, each with a Copy-for-DM text |

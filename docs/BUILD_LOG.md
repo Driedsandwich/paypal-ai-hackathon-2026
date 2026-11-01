@@ -330,3 +330,64 @@ pushed, remotes unchanged, no dependencies added, no new env names.
    hosted demo: then new cases appear without pasting the ID.
 3. Registered cases that belong to no sale of this demo are listed on Disputes (as the PayPal
    list already did). Keep that, or show only cases linked to this demo's sales?
+
+## Pass 4 (after the first Render deploy): 2026-11-01
+
+The app is deployed at <https://okuri.onrender.com> (Render free plan, real PayPal sandbox,
+Claude primary, Gemini fallback). Fixes after the first deploy and the live check, smallest
+safe change each, in the order 1, 2, 5, 3, 4. Branch `claude/build-v1`, pushed after each item;
+no pull request, nothing merged, no dependencies added, no new env names, no credentials.
+
+### Result
+
+- `npm run typecheck`, `npm test`, `npm run build`, `npm run prepublish-check` pass after every
+  commit (Node 22 locally; CI runs Node 20 and 22).
+- **Tests: 233 before (19 files), 251 after (22 files).** New: `test/ai-startup.test.ts` (5),
+  `test/shipping.test.ts` (7), `test/insights.test.ts` (3), and 3 tests in
+  `test/disputes-allowed.test.ts`. One existing assertion changed on purpose:
+  `allowed_response_options` alone no longer allows accept-claim (DECISIONS 68).
+
+### What changed
+
+| Item | Change | Where |
+| --- | --- | --- |
+| 1 Startup without AI keys | `createAiSetupFromEnv`: primary key missing → offline AI, no fallback, banner "AI is not configured: …" and `/api/health` `ai.configured: false` + `ai.warnings`; fallback key missing → no fallback, said in `ai.warnings`. Checked with the built server (`AI_PROVIDER=anthropic`, no key): it starts, logs the warning, health and banner as described. | `src/ai/index.ts`, `src/server.ts`, `src/http/api.ts` |
+| 2 Accept-claim | Every seller action needs PayPal's HATEOAS link; `allowed_response_options` only narrows. Test with the fixture (as recorded, and with `allowed_response_options.accept_claim` added): accept-claim not allowed, no proposals, 409, no PayPal write. | `src/paypal/dispute-actions.ts`, `test/disputes-allowed.test.ts` |
+| 5 README | Hosted URL at the top with the wake-up note, "AI tools used" section, "How AI is used" says Claude primary / Gemini fallback and what happens without keys; Gemini row in the components table; work-log row; checklist item for the hosted demo ticked. | `README.md` |
+| 3 Shipping | Optional `listing.shipping` → Invoicing v2 `amount.breakdown.shipping` (payment links: breakdown + total); same currency and pass-2a precision; sale amount = billed total; offline simulator includes it; UI field, Shipping row and "Item … + Shipping …" in the approval preview and journey callouts. | `src/agent/schemas.ts`, `src/agent/tasks.ts`, `src/paypal/types.ts`, `src/paypal/offline.ts`, `src/http/api.ts`, `web/src/` |
+| 4 Insights | The Disputes (sum) numbers were computed but hidden under the grid's vertical scrollbar (ledger too short for six countries + total). The ledger is sized to its rows now; row maths in a pure module, tested against the cards. | `web/src/views/Insights.tsx`, `web/src/insights-data.ts` |
+
+### How I checked things
+
+- Unit and HTTP tests for each item (fake PayPal and the fixture; no network).
+- Built server, offline demo, headless Chromium at 1440 px and 390 px wide: every cell of the
+  Disputes (sum) column (0, 0, 0, 0, 1, 0, total 1) is the element at its own position (before
+  the fix the point was covered by `ag-body-vertical-scroll-container`), and the totals match the
+  cards ($380 paid, $40 unpaid, "1 of 3 paid sales"). New item → Shipping 18 → Prepare invoice:
+  the journey callout and the approval detail show the Shipping row, Total USD $98.00 and
+  "Item USD $80.00 + Shipping USD $18.00"; no page errors. Scripts and screenshots were
+  temporary and are not committed; `docs/media/` was not regenerated.
+
+### Not done, or only partly, and why
+
+- **Not verified live:** that PayPal's sandbox shows the shipping charge on the invoice and its
+  total as expected (the field is in the Invoicing v2 schema; please check one invoice with
+  shipping on the hosted demo). Also not verified which field made the live app show
+  accept-claim: the recorded fixture has no `allowed_response_options`, so it already tested
+  as not allowed before this pass; the change closes the only path that could allow it without
+  a link (DECISIONS 68). If the live app still shows it, please record the case's raw
+  `allowed_response_options` and `links`.
+- The chat tools `create_invoice` / `create_payment_link` take no shipping (the New item form
+  and the journey callout do).
+- Insights on phones: the narrow "Dispute rate" widget shows "0…%" inside its sideways-scrolling
+  box (pre-existing; the plain summary above it shows the full rate).
+- The README's "AI tools used" describes Codex's part as the owner stated it; the repository
+  has no record of the Codex sessions.
+
+### Open questions for you
+
+1. Please create one invoice with shipping on the hosted demo and confirm the buyer's PayPal
+   page shows the item, the shipping and the total.
+2. Should a missing primary key with a configured fallback use the fallback as the primary
+   instead of the offline AI? (Now: offline AI, as you asked, and the fallback is not used.)
+3. Should the chat agent's invoice tools accept shipping too?
