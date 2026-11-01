@@ -156,9 +156,10 @@ See `.env.example`. Never commit `.env`. All are optional.
 | `AI_MODEL` | Model id. Defaults: `claude-opus-5-5` (anthropic), `gemini-3.5-flash` (google), `gpt-5.4-mini` (openai). |
 | `AI_API_KEY` | API key for the chosen AI provider. |
 | `AI_MAX_OUTPUT_TOKENS` | Max output tokens per AI call, thinking included (default 2000). |
-| `AI_RATE_LIMIT_PER_IP` | AI requests per client address per window (default 20). |
-| `AI_RATE_LIMIT_WINDOW_MINUTES` | Window for the per-address limit (default 10). |
-| `AI_DAILY_CAP` | AI requests per UTC day for the whole server (default 300). |
+| `AI_RATE_LIMIT_PER_IP` | Valid AI requests per client address per window, counted after input validation (default 20). |
+| `AI_RATE_LIMIT_WINDOW_MINUTES` | Window for the per-address AI limits (default 10). |
+| `AI_INVALID_RATE_LIMIT_PER_IP` | Invalid AI requests (bad input) per client address per window before the address is refused (default 20). |
+| `AI_DAILY_CAP` | **Model calls** per UTC day for the whole server (default 300). Every chat tool step and every JSON repair retry counts. |
 | `PROPOSAL_RATE_LIMIT` | New proposals per demo session and per client address per window (default 20). |
 | `APPROVAL_RATE_LIMIT` | Approvals per demo session and per client address per window (default 20). |
 | `PAYPAL_READ_RATE_LIMIT` | Requests that read from PayPal, per client address per window (default 60). |
@@ -208,7 +209,9 @@ The agent has four typed tasks and a chat entry point:
 
 Every model answer must be JSON matching a schema (validated with zod, one retry). The
 seller approves every action that reaches PayPal or a buyer. AI routes have a per-address
-rate limit, a daily cap and an output-token cap, with a clear message when a limit is hit.
+rate limit (counted after input validation), a separate limit for invalid requests, a daily
+budget of model calls (each chat tool step and each retry counts) and an output-token cap
+per call, with a clear message when a limit is hit. Model calls are aborted after 45 seconds.
 
 ## Architecture
 

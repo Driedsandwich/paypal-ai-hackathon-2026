@@ -62,7 +62,9 @@ export class AiSdkProvider implements AiProvider {
         ...(system ? { system } : {}),
         messages,
         maxOutputTokens: Math.min(request.maxTokens ?? this.defaults.maxOutputTokens, this.defaults.maxOutputTokens),
-        ...(tools ? { tools, stopWhen: stepCountIs(request.maxSteps ?? 5) } : {}),
+        ...(tools ? { tools, stopWhen: [stepCountIs(request.maxSteps ?? 5), ...(request.canContinue ? [() => !request.canContinue!()] : [])] } : {}),
+        // Every step is a model call: count it before it happens (daily AI budget).
+        ...(request.onModelCall ? { prepareStep: () => (request.onModelCall!(), undefined) } : {}),
         ...(this.defaults.providerOptions ? { providerOptions: this.defaults.providerOptions } : {}),
         abortSignal,
       });

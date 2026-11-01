@@ -29,6 +29,13 @@ export interface AiCompletionRequest {
   tools?: AiToolSpec[];
   /** Maximum model steps when tools are present. Default 5. */
   maxSteps?: number;
+  /**
+   * Called right before every model call (each tool step and each retry counts). Throws to
+   * refuse the call, e.g. when the daily AI budget is used up.
+   */
+  onModelCall?: () => void;
+  /** Checked between tool steps; false stops the run after the current step. */
+  canContinue?: () => boolean;
 }
 
 export interface AiCompletionResult {

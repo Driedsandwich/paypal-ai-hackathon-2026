@@ -2,6 +2,7 @@ import { createServer, type Server } from "node:http";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createAiProviderFromEnv, FakeAiProvider } from "./ai/index.js";
+import { withAiBudget } from "./ai/budget.js";
 import { offlineReply } from "./ai/offline.js";
 import type { AiProvider } from "./ai/provider.js";
 import { Agent } from "./agent/tasks.js";
@@ -61,7 +62,11 @@ export function describeExecutionError(err: unknown, log: (msg: string) => void 
 export function buildDeps(options: AppOptions = {}): ApiDeps & { log: (msg: string) => void; staticDir: string | undefined } {
   const settings = options.settings ?? loadSettings({});
   const paypal = options.paypal ?? (options.paypalConfig ? new PayPalClient({ config: options.paypalConfig }) : undefined);
-  const ai = options.ai ?? new FakeAiProvider([offlineReply]);
+  const limiter =
+    options.limiter ??
+    new AiLimiter({ perIpMax: settings.aiRateLimitPerIp, windowMs: settings.aiRateLimitWindowMinutes * 60_000, dailyCap: settings.aiDailyCap, invalidMax: settings.aiInvalidRateLimitPerIp });
+  // Every model call is debited from the daily AI budget (F9).
+  const ai = withAiBudget(options.ai ?? new FakeAiProvider([offlineReply]), limiter);
   const log = options.log ?? (() => {});
   const buyers = new DemoBuyers(settings.demoBuyerEmails);
   const orders = options.orders ?? new OrderRegistry();
@@ -91,9 +96,7 @@ export function buildDeps(options: AppOptions = {}): ApiDeps & { log: (msg: stri
     }),
     events: options.events ?? new EventLog(),
     proposals,
-    limiter:
-      options.limiter ??
-      new AiLimiter({ perIpMax: settings.aiRateLimitPerIp, windowMs: settings.aiRateLimitWindowMinutes * 60_000, dailyCap: settings.aiDailyCap }),
+    limiter,
     buyers,
     orders,
     reminders,

@@ -41,6 +41,7 @@ export class FakeAiProvider implements AiProvider {
   }
 
   async complete(request: AiCompletionRequest): Promise<AiCompletionResult> {
+    request.onModelCall?.(); // first model step
     if (this.recordMax > 0) {
       this.calls.push(request);
       if (this.calls.length > this.recordMax) this.calls.splice(0, this.calls.length - this.recordMax);
@@ -57,7 +58,12 @@ export class FakeAiProvider implements AiProvider {
       const input = spec.inputSchema.parse(call.input);
       toolCalls.push({ name: call.name, input, output: await spec.execute(input) });
     }
-    const text = value.after ? value.after(toolCalls) : value.text;
+    // Like the AI SDK: after tool calls, a second model step writes the final text.
+    let text = value.text;
+    if (toolCalls.length && (request.canContinue?.() ?? true)) {
+      request.onModelCall?.();
+      text = value.after ? value.after(toolCalls) : value.text;
+    }
     return { text, provider: this.name, ...(toolCalls.length ? { toolCalls } : {}) };
   }
 }

@@ -13,7 +13,10 @@ export interface AppSettings {
   aiMaxOutputTokens: number;
   aiRateLimitPerIp: number;
   aiRateLimitWindowMinutes: number;
+  /** Model calls per UTC day, whole server; every tool step and retry counts (AI_DAILY_CAP). */
   aiDailyCap: number;
+  /** Invalid AI requests per address per AI window before refusing (AI_INVALID_RATE_LIMIT_PER_IP). */
+  aiInvalidRateLimitPerIp: number;
   fxJpyPerUsd: number;
   sellerBusinessName: string | undefined;
   demoBuyerEmails: string[];
@@ -82,6 +85,7 @@ export function loadSettings(env: NodeJS.ProcessEnv = process.env): AppSettings 
     aiRateLimitPerIp: num(env, "AI_RATE_LIMIT_PER_IP", 20, 1, 10_000),
     aiRateLimitWindowMinutes: num(env, "AI_RATE_LIMIT_WINDOW_MINUTES", 10, 1, 1440),
     aiDailyCap: num(env, "AI_DAILY_CAP", 300, 1, 1_000_000),
+    aiInvalidRateLimitPerIp: num(env, "AI_INVALID_RATE_LIMIT_PER_IP", 20, 1, 10_000, true),
     fxJpyPerUsd: num(env, "FX_JPY_PER_USD", 150, 1, 10_000),
     sellerBusinessName: (env.SELLER_BUSINESS_NAME ?? "").trim() || undefined,
     demoBuyerEmails: (env.DEMO_BUYER_EMAILS ?? "")

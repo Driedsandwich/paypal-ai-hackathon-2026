@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { ZodError } from "zod";
 import { AgentOutputError } from "../agent/json-task.js";
 import { LimitError } from "../limits/limits.js";
+import { AiBudgetError } from "../limits/rate-limit.js";
 import { MoneyError } from "../money.js";
 import { maskEmailsDeep } from "../privacy/mask.js";
 import { AiTimeoutError } from "../ai/ai-sdk-provider.js";
@@ -48,6 +49,12 @@ export async function readBody(req: IncomingMessage, maxBytes: number): Promise<
  * that cross-site without a CORS preflight, which this server never grants (CSRF guard
  * for the approve endpoint).
  */
+/** Errors that mean "the request itself was invalid" (counted by the invalid-AI-request limit). */
+export function isInvalidInputError(err: unknown): boolean {
+  if (err instanceof ZodError || err instanceof MoneyError) return true;
+  return err instanceof HttpError && [400, 413, 415].includes(err.status);
+}
+
 export async function readJsonBody(req: IncomingMessage, maxBytes: number): Promise<Record<string, unknown>> {
   const type = (req.headers["content-type"] ?? "").split(";")[0]!.trim().toLowerCase();
   if (type !== "application/json") throw new HttpError(415, "unsupported_media_type", "Send the request body as application/json");
@@ -71,6 +78,9 @@ export function sendError(res: ServerResponse, err: unknown, log: (msg: string) 
   if (err instanceof ZodError) {
     const issues = err.issues.slice(0, 20).map((i) => `${i.path.join(".") || "(body)"}: ${i.message}`);
     return sendJson(res, 400, { ok: false, error: { code: "invalid_input", message: "Some fields are missing or invalid", issues } });
+  }
+  if (err instanceof AiBudgetError) {
+    return sendJson(res, 429, { ok: false, error: { code: "daily_cap_reached", message: err.message, retryAfterSeconds: err.retryAfterSeconds } }, { "Retry-After": String(err.retryAfterSeconds) });
   }
   if (err instanceof LimitError) {
     return sendJson(res, err.status, { ok: false, error: { code: err.code, message: err.message, retryAfterSeconds: err.retryAfterSeconds } }, { "Retry-After": String(err.retryAfterSeconds) });

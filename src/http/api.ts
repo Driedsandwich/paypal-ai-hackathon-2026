@@ -8,7 +8,7 @@ import type { AppSettings } from "../config.js";
 import type { DemoBuyers } from "../demo/buyers.js";
 import { DEMO_ITEMS } from "../demo/items.js";
 import type { EventCategory, EventLog } from "../events/log.js";
-import type { AiLimiter } from "../limits/rate-limit.js";
+import type { AiLimiter, LimitResult } from "../limits/rate-limit.js";
 import { writeCost, type DemoLimits } from "../limits/demo-limits.js";
 import type { PayPalReadCache } from "../paypal/read-cache.js";
 import { showMoney } from "../money.js";
@@ -26,7 +26,7 @@ import { clientAddress, limitKey } from "./client-address.js";
 import { disputeDetail, disputeRow, invoiceDetail, invoiceRow, orderView, publicPack, publicProposal as toPublic } from "./dto.js";
 import { queueCapture } from "./paypal-return.js";
 import { ensureSession, isSecureRequest } from "./session.js";
-import { HttpError, ok, readJsonBody } from "./util.js";
+import { HttpError, isInvalidInputError, ok, readJsonBody } from "./util.js";
 
 export interface ApiDeps {
   settings: AppSettings;
@@ -66,6 +66,11 @@ interface Ctx {
   session: string;
   /** Client address (see TRUST_PROXY_HOPS). */
   address: string;
+  /**
+   * AI routes call this after validating their input and right before the first model call:
+   * it debits the per-address AI allowance and checks the daily budget (F9).
+   */
+  startAi: () => void;
 }
 
 type Handler = (ctx: Ctx) => Promise<void>;
@@ -139,6 +144,8 @@ export function healthData(deps: ApiDeps) {
       dailyCap: deps.settings.aiDailyCap,
       maxOutputTokens: deps.settings.aiMaxOutputTokens,
       usedToday: deps.limiter.usage().usedToday,
+      invalidPerIp: deps.settings.aiInvalidRateLimitPerIp,
+      countsModelCalls: true,
     },
     demo: { notice: DEMO_NOTICE, buyerEmailsConfigured: deps.buyers.size, buyers: deps.buyers.publicList() },
     agStudio: { licensed: deps.settings.agStudioLicensed },
@@ -193,8 +200,10 @@ const ROUTES: Route[] = [
     method: "POST",
     pattern: /^\/api\/listings\/draft$/,
     ai: true,
-    handler: async ({ req, res, deps }) => {
+    handler: async (ctx) => {
+      const { req, res, deps } = ctx;
       const { item } = z.object({ item: JpItemSchema }).parse(await readJsonBody(req, MAX_API_BODY));
+      ctx.startAi();
       ok(res, await deps.agent.draftListing(item));
     },
   },
@@ -206,6 +215,9 @@ const ROUTES: Route[] = [
       const { req, res, deps } = ctx;
       const body = PrepareSchema.parse(await readJsonBody(req, MAX_API_BODY));
       const alias = requireBuyer(deps, body.buyer?.alias);
+      deps.proposals.assertRoom(1, limitKey(ctx.address));
+      deps.limits.checkProposals(ctx.session, limitKey(ctx.address));
+      ctx.startAi();
       if (deps.settings.paymentPath === "order") {
         const prepared = await deps.agent.preparePaymentLink(body.listing, { alias });
         const proposal = propose(ctx, "create_payment_link", `Create payment link for ${showMoney(body.listing.price)} for ${alias}: ${body.listing.title}`, prepared.payload, prepared.buyer_message.note);
@@ -224,6 +236,9 @@ const ROUTES: Route[] = [
       const { req, res, deps } = ctx;
       const body = PrepareSchema.parse(await readJsonBody(req, MAX_API_BODY));
       const alias = requireBuyer(deps, body.buyer?.alias);
+      deps.proposals.assertRoom(1, limitKey(ctx.address));
+      deps.limits.checkProposals(ctx.session, limitKey(ctx.address));
+      ctx.startAi();
       const prepared = await deps.agent.preparePaymentLink(body.listing, { alias });
       const proposal = propose(ctx, "create_payment_link", `Create payment link for ${showMoney(body.listing.price)} for ${alias}: ${body.listing.title}`, prepared.payload, prepared.buyer_message.note);
       ok(res, { path: "order", proposal: publicProposal(ctx, proposal), buyer_message: prepared.buyer_message, generated_by: prepared.generated_by });
@@ -270,6 +285,7 @@ const ROUTES: Route[] = [
       if (unpaid.length) {
         deps.proposals.assertRoom(unpaid.length, limitKey(ctx.address));
         deps.limits.checkProposals(ctx.session, limitKey(ctx.address), unpaid.length);
+        ctx.startAi();
       }
       const numbers = new Map(unpaid.map((u) => [u.invoice_id, u.invoice_number]));
       const proposals = reminders.map((r) =>
@@ -394,6 +410,7 @@ const ROUTES: Route[] = [
         messages: (d.messages ?? []).slice(-30).map((m) => ({ posted_by: m.posted_by, time_posted: m.time_posted, content: (m.content ?? "").slice(0, 2000) })),
         ...(body.seller_notes ? { seller_notes: body.seller_notes } : {}),
       });
+      ctx.startAi();
       const pack = await deps.agent.disputeEvidencePack(input);
       // Only actions PayPal currently allows on this dispute become proposals (F11).
       const allowed = disputeActions(d);
@@ -504,6 +521,7 @@ const ROUTES: Route[] = [
     handler: async (ctx) => {
       const { req, res, deps, session } = ctx;
       const body = ChatInputSchema.parse(await readJsonBody(req, MAX_API_BODY));
+      ctx.startAi();
       const result = await chat(
         deps.ai,
         {
@@ -535,14 +553,28 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
   if (!route) throw new HttpError(405, "method_not_allowed", `Use ${matching.map((r) => r.method).join(" or ")}`, {}, { Allow: matching.map((r) => r.method).join(", ") });
   const address = clientAddress(req, deps.settings.trustProxyHops);
   const session = ensureSession(req, res, isSecureRequest(req, deps.settings.publicBaseUrl, deps.settings.trustProxyHops));
-  if (route.paypalRead && deps.paypal) deps.limits.takeRead(limitKey(address));
+  const key = limitKey(address);
+  const refuse = (v: Exclude<LimitResult, { ok: true }>) =>
+    new HttpError(429, { per_ip: "rate_limited", daily_cap: "daily_cap_reached", invalid: "too_many_invalid_requests" }[v.reason], v.message, { retryAfterSeconds: v.retryAfterSeconds }, { "Retry-After": String(v.retryAfterSeconds) });
   if (route.ai) {
-    const verdict = deps.limiter.take(limitKey(address));
-    if (!verdict.ok) {
-      throw new HttpError(429, verdict.reason === "per_ip" ? "rate_limited" : "daily_cap_reached", verdict.message, { retryAfterSeconds: verdict.retryAfterSeconds }, { "Retry-After": String(verdict.retryAfterSeconds) });
-    }
+    // Cheap check for addresses that keep sending invalid AI requests (before parsing).
+    const v = deps.limiter.checkInvalid(key);
+    if (!v.ok) throw refuse(v);
   }
+  if (route.paypalRead && deps.paypal) deps.limits.takeRead(key);
+  let aiStarted = false;
+  const startAi = () => {
+    if (aiStarted) return;
+    aiStarted = true;
+    const v = deps.limiter.take(key);
+    if (!v.ok) throw refuse(v);
+  };
   const params = route.pattern.exec(url.pathname)!.slice(1);
-  await route.handler({ req, res, params, query: url.searchParams, deps, session, address });
+  try {
+    await route.handler({ req, res, params, query: url.searchParams, deps, session, address, startAi });
+  } catch (err) {
+    if (route.ai && !aiStarted && isInvalidInputError(err)) deps.limiter.recordInvalid(key);
+    throw err;
+  }
   return true;
 }

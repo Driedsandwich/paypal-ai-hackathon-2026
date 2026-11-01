@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { renderTextPdf } from "../src/docs/simple-pdf.js";
 import { EventLog, WebhookDedup } from "../src/events/log.js";
 import { TtlMap } from "../src/util/ttl-map.js";
-import { AiLimiter } from "../src/limits/rate-limit.js";
+import { AiBudgetError, AiLimiter } from "../src/limits/rate-limit.js";
 import { DemoBuyers } from "../src/demo/buyers.js";
 import { createPayPalExecutor, payerLinkOf } from "../src/proposals/actions.js";
 import { OrderRegistry } from "../src/proposals/order-registry.js";
@@ -283,15 +283,28 @@ describe("AiLimiter", () => {
     expect(limiter.take("1.2.3.4").ok).toBe(true);
   });
 
-  it("enforces the global daily cap and resets at 00:00 UTC", () => {
+  it("the daily budget counts model calls (not requests) and resets at 00:00 UTC", () => {
     let now = Date.parse("2026-11-01T23:59:00Z");
     const limiter = new AiLimiter({ perIpMax: 100, windowMs: 600_000, dailyCap: 3 }, () => now);
-    for (let i = 0; i < 3; i++) expect(limiter.take(`ip${i}`).ok).toBe(true);
+    expect(limiter.take("ip1").ok).toBe(true); // one request ...
+    for (let i = 0; i < 3; i++) limiter.debitModelCall(); // ... can use several model calls
+    expect(() => limiter.debitModelCall()).toThrow(AiBudgetError);
     const refused = limiter.take("ip9");
     expect(refused).toMatchObject({ ok: false, reason: "daily_cap", retryAfterSeconds: 60 });
-    expect(refused.ok ? "" : refused.message).toMatch(/daily AI limit/);
+    expect(refused.ok ? "" : refused.message).toMatch(/daily AI limit \(3 model calls\)/);
+    expect(limiter.usage()).toEqual({ usedToday: 3, dailyCap: 3 });
     now = Date.parse("2026-11-02T00:00:01Z");
     expect(limiter.take("ip9").ok).toBe(true);
+  });
+
+  it("has a separate cheap limit for invalid requests", () => {
+    const limiter = new AiLimiter({ perIpMax: 100, windowMs: 600_000, dailyCap: 300, invalidMax: 2 });
+    limiter.recordInvalid("1.2.3.4");
+    expect(limiter.checkInvalid("1.2.3.4").ok).toBe(true);
+    limiter.recordInvalid("1.2.3.4");
+    expect(limiter.checkInvalid("1.2.3.4")).toMatchObject({ ok: false, reason: "invalid" });
+    expect(limiter.checkInvalid("5.6.7.8").ok).toBe(true);
+    expect(limiter.usage().usedToday).toBe(0);
   });
 });
 
