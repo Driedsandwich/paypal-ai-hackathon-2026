@@ -71,21 +71,24 @@ PayPal until the seller clicks Approve**, and the server enforces that.
 5. **Tracking:** on a paid sale (for example *OK-8789*), at step 4 enter a carrier
    (`Japan Post`) and a tracking number, click *Add tracking*, then **Approve**. The app registers the tracking with PayPal for this payment.
    Tracking can only be added to invoices and payment links this demo created.
-6. **Dispute:** open **Disputes**, paste the sample case ID `PP-R-EMU-10195761` into the box
+6. **Dispute:** open **Disputes**, paste the sample case ID `PP-R-HNF-10195796` into the box
    at the top and click *Open a case by ID*. Our sandbox buyer opened this *item not received*
-   case on 2026-11-01. The same day Okuri built the evidence pack, the seller approved it, and
-   Okuri submitted the evidence through the Disputes API; PayPal then moved the case to its own
+   case for sale *OK-8786* (a paid, tracked invoice) on 2026-11-02, so that sale's journey also
+   shows a dashed branch to **Evidence + reply**. Okuri built the evidence pack; PayPal refused
+   the first evidence type (proof of fulfillment, `EVIDENCE_TYPE_IS_NOT_ALLOWED`), Okuri sent
+   nothing and offered the same facts as an *OTHER* proposal, and after the seller's approval
+   PayPal accepted it (with the PDF invoice summary attached) and moved the case to its own
    review (it may be closed by the time you read this). PayPal now offers the seller no action,
    so the app says so and shows the case read-only: *Build evidence pack with AI* still writes a
    summary, a timeline, an English reply and the evidence notes, and flags in red any date,
    amount or tracking number it cannot back up with PayPal's data, but there is nothing to
-   approve. Only actions PayPal currently allows ever become proposals. For a case of your own
-   (your own sandbox app and buyer), open an *item not received* case in PayPal's Resolution
-   Center and paste its **case ID** (it looks like `PP-R-ABC-12345678`): new sandbox cases can
-   take a while (more than 3 minutes in our test) to appear in PayPal's dispute list, and *Open
-   a case by ID* reads them at once (sooner when the dispute webhook is set up, see Setup). A
-   case about a sale the demo created also shows a dashed branch to **Evidence + reply** on
-   that sale's journey.
+   approve. Only actions PayPal currently allows ever become proposals. (An earlier sample case,
+   `PP-R-EMU-10195761`, is about a test order outside the demo and is not linked to a journey.)
+   For a case of your own (your own sandbox app and buyer), open an *item not received* case in
+   PayPal's Resolution Center and paste its **case ID** (it looks like `PP-R-ABC-12345678`):
+   new sandbox cases can take a while (more than 3 minutes in our test) to appear in PayPal's
+   dispute list, and *Open a case by ID* reads them at once (sooner when the dispute webhook is
+   set up, see Setup).
 7. **Insights:** revenue by buyer country, unpaid invoices and the dispute rate, built with
    AG Studio from the same sales.
 8. *Ask Okuri* (footer link): free chat with the agent in Japanese or English; anything it
