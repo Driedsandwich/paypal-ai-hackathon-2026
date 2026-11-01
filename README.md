@@ -73,7 +73,7 @@ PayPal until the seller clicks Approve**, and the server enforces that.
    Tracking can only be added to invoices and payment links this demo created.
 6. **Dispute:** open **Disputes**, paste the sample case ID `PP-R-HNF-10195796` into the box
    at the top and click *Open a case by ID*. Our sandbox buyer opened this *item not received*
-   case for sale *OK-8786* (a paid, tracked invoice) on 2026-11-02, so that sale's journey also
+   case for sale *OK-8786* (a paid, tracked invoice) on 2026-11-01 (UTC), so that sale's journey also
    shows a dashed branch to **Evidence + reply**. Okuri built the evidence pack; PayPal refused
    the first evidence type (proof of fulfillment, `EVIDENCE_TYPE_IS_NOT_ALLOWED`), Okuri sent
    nothing and offered the same facts as an *OTHER* proposal, and after the seller's approval
