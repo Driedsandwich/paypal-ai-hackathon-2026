@@ -1,0 +1,107 @@
+# Render Blueprint for the hosted demo: one free web service, no database.
+# State (proposals, journeys, limits) is in memory; the free instance sleeps after about
+# 15 minutes without traffic and takes about a minute to wake up, which also clears it.
+# Invoices this app created are recognised again from PayPal after a restart (marker in
+# the invoice reference). Every name below is listed in .env.example and the README.
+services:
+  - type: web
+    name: okuri
+    runtime: node
+    plan: free
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    autoDeploy: false
+    envVars:
+      # Node 22 (Vite 8 needs ^20.19 or >=22.12).
+      - key: NODE_VERSION
+        value: 22.12.0
+
+      # ---- Credentials and per-deployment values: set in the Render dashboard ----
+      - key: PAYPAL_CLIENT_ID
+        sync: false
+      - key: PAYPAL_CLIENT_SECRET
+        sync: false
+      - key: PAYPAL_WEBHOOK_ID
+        sync: false
+      - key: AI_API_KEY
+        sync: false
+      - key: AI_FALLBACK_API_KEY
+        sync: false
+      - key: AG_STUDIO_LICENSE
+        sync: false
+      # Sandbox personal (buyer) account emails, comma-separated.
+      - key: DEMO_BUYER_EMAILS
+        sync: false
+      # The service URL, e.g. https://okuri.onrender.com (PayPal return/cancel URLs).
+      - key: PUBLIC_BASE_URL
+        sync: false
+      - key: SELLER_BUSINESS_NAME
+        sync: false
+
+      # ---- PayPal ----
+      - key: PAYPAL_ENV
+        value: sandbox
+      - key: PAYMENT_PATH
+        value: invoice
+      # true runs the in-memory PayPal simulator instead of the sandbox (keyless demo).
+      - key: PAYPAL_OFFLINE_DEMO
+        value: "false"
+
+      # ---- AI ----
+      - key: AI_PROVIDER
+        value: anthropic
+      - key: AI_MODEL
+        value: claude-opus-5-5
+      - key: AI_FALLBACK_PROVIDER
+        value: google
+      - key: AI_FALLBACK_MODEL
+        value: gemini-3.5-flash
+      - key: AI_FALLBACK_DAILY_CAP
+        value: "300"
+      - key: AI_MAX_OUTPUT_TOKENS
+        value: "2000"
+      - key: AI_RATE_LIMIT_PER_IP
+        value: "20"
+      - key: AI_RATE_LIMIT_WINDOW_MINUTES
+        value: "10"
+      - key: AI_INVALID_RATE_LIMIT_PER_IP
+        value: "20"
+      - key: AI_DAILY_CAP
+        value: "300"
+
+      # ---- Limits on the shared sandbox account ----
+      - key: PROPOSAL_RATE_LIMIT
+        value: "20"
+      - key: APPROVAL_RATE_LIMIT
+        value: "20"
+      - key: PAYPAL_READ_RATE_LIMIT
+        value: "60"
+      - key: RATE_LIMIT_WINDOW_MINUTES
+        value: "10"
+      - key: PAYPAL_DAILY_WRITE_CAP
+        value: "100"
+      - key: LIST_CACHE_SECONDS
+        value: "30"
+      - key: WEBHOOK_RATE_LIMIT
+        value: "30"
+      - key: WEBHOOK_GLOBAL_RATE_LIMIT
+        value: "120"
+      - key: SEED_SESSION_INTERVAL_MINUTES
+        value: "60"
+      - key: SEED_DAILY_CAP
+        value: "10"
+      - key: EXECUTION_CONCURRENCY
+        value: "2"
+      - key: MAX_CONCURRENT_REQUESTS
+        value: "20"
+
+      # ---- App ----
+      - key: FX_JPY_PER_USD
+        value: "150"
+      # Render's proxy appends the client address to X-Forwarded-For: one trusted hop.
+      - key: TRUST_PROXY_HOPS
+        value: "1"
+      # Render routes to the port in PORT (its default is 10000).
+      - key: PORT
+        value: "10000"

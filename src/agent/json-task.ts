@@ -44,7 +44,7 @@ export interface JsonTaskOptions<S extends z.ZodType> {
 export async function runJsonTask<S extends z.ZodType>(
   ai: AiProvider,
   opts: JsonTaskOptions<S>,
-): Promise<{ value: z.infer<S>; provider: string; model?: string }> {
+): Promise<{ value: z.infer<S>; provider: string; model?: string; fallbackFrom?: { provider: string; model?: string; reason: string } }> {
   const jsonSchema = JSON.stringify(z.toJSONSchema(opts.schema));
   // Free text (item descriptions, dispute messages, seller notes) is redacted before it
   // reaches the model: email addresses, phone numbers, street-address-like lines (F7).
@@ -75,7 +75,7 @@ export async function runJsonTask<S extends z.ZodType>(
     }
     const check = opts.schema.safeParse(parsed);
     if (check.success) {
-      return { value: check.data, provider: result.provider, ...(result.model ? { model: result.model } : {}) };
+      return { value: check.data, provider: result.provider, ...(result.model ? { model: result.model } : {}), ...(result.fallbackFrom ? { fallbackFrom: result.fallbackFrom } : {}) };
     }
     issues = check.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`);
     messages.push({ role: "assistant", content: result.text }, { role: "user", content: retryPrompt(issues) });

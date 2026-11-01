@@ -44,6 +44,10 @@ export interface AiCompletionResult {
   provider: string;
   model?: string;
   toolCalls?: AiToolCallRecord[];
+  /** Why the model stopped ("stop", "length" = cut off by the output cap, …), when known. */
+  finishReason?: string;
+  /** Set when a fallback provider answered because the primary could not. */
+  fallbackFrom?: { provider: string; model?: string; reason: string };
 }
 
 /** The one seam the app talks to. Swap implementations without touching callers. */

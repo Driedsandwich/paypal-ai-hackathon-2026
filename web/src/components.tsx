@@ -298,7 +298,13 @@ export function ProposalOutcome({ proposal }: { proposal: Proposal }) {
   );
 }
 
-export function ModelChip({ by }: { by?: { provider: string; model?: string | null } }) {
+export function ModelChip({ by }: { by?: { provider: string; model?: string | null; fallback_from?: { provider: string; reason: string } } }) {
   if (!by) return null;
-  return <span className="chip chip-small" title={by.model ?? undefined}>{providerLabel(by.provider)}</span>;
+  const title = `${by.model ?? by.provider}${by.fallback_from ? ` (answered because ${providerLabel(by.fallback_from.provider)} could not: ${by.fallback_from.reason.replace(/_/g, " ")})` : ""}`;
+  return (
+    <span className="chip chip-small" title={title}>
+      {providerLabel(by.provider)}
+      {by.fallback_from && <span className="chip-sub"> · fallback</span>}
+    </span>
+  );
 }

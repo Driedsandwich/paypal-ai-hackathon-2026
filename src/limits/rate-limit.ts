@@ -35,6 +35,8 @@ export class AiLimiter {
   private readonly perIp: SlidingWindowLimiter;
   private readonly invalid: SlidingWindowLimiter;
   private readonly budget: DailyCounter;
+  /** The fallback provider's own budget (AI_FALLBACK_DAILY_CAP), if one is configured. */
+  private fallback: AiLimiter | undefined;
 
   constructor(
     readonly config: AiLimitConfig,
@@ -58,6 +60,16 @@ export class AiLimiter {
     };
   }
 
+  /** Lets requests through while the fallback provider still has budget. */
+  setFallback(fallback: AiLimiter): void {
+    this.fallback = fallback;
+  }
+
+  /** Room for at least one model call, on the primary or the fallback provider. */
+  private anyBudget(): boolean {
+    return this.budget.remaining() > 0 || Boolean(this.fallback?.hasBudget());
+  }
+
   /** Cheap check before parsing: refuses addresses that sent too many invalid AI requests. */
   checkInvalid(clientKey: string): LimitResult {
     const wait = this.invalid.waitSeconds(clientKey);
@@ -77,7 +89,7 @@ export class AiLimiter {
    * debitModelCall().
    */
   take(clientKey: string): LimitResult {
-    if (this.budget.remaining() <= 0) return this.dailyCapResult();
+    if (!this.anyBudget()) return this.dailyCapResult();
     const wait = this.perIp.waitSeconds(clientKey);
     if (wait > 0) {
       return {
@@ -103,7 +115,7 @@ export class AiLimiter {
     return this.budget.remaining() > 0;
   }
 
-  usage(): { usedToday: number; dailyCap: number } {
-    return { usedToday: this.budget.used(), dailyCap: this.config.dailyCap };
+  usage(): { usedToday: number; dailyCap: number; fallback?: { usedToday: number; dailyCap: number } } {
+    return { usedToday: this.budget.used(), dailyCap: this.config.dailyCap, ...(this.fallback ? { fallback: this.fallback.usage() } : {}) };
   }
 }

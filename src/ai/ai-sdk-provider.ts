@@ -76,6 +76,7 @@ export class AiSdkProvider implements AiProvider {
       text: result.text,
       provider: this.name,
       model: this.model,
+      finishReason: result.finishReason,
       ...(records.length ? { toolCalls: records } : {}),
     };
   }

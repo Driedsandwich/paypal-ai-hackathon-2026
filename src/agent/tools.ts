@@ -308,6 +308,6 @@ export async function chat(ai: AiProvider, deps: ToolDeps, messages: AiMessage[]
     reply: result.text,
     tool_calls: (result.toolCalls ?? []).map((c) => ({ name: c.name, input: c.input })),
     proposals,
-    generated_by: { provider: result.provider, ...(result.model ? { model: result.model } : {}) },
+    generated_by: { provider: result.provider, ...(result.model ? { model: result.model } : {}), ...(result.fallbackFrom ? { fallback_from: result.fallbackFrom } : {}) },
   };
 }

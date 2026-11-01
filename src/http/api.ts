@@ -189,6 +189,7 @@ export function healthData(deps: ApiDeps) {
       dailyCap: deps.settings.aiDailyCap,
       maxOutputTokens: deps.settings.aiMaxOutputTokens,
       usedToday: deps.limiter.usage().usedToday,
+      ...(deps.limiter.usage().fallback ? { fallback: deps.limiter.usage().fallback } : {}),
       invalidPerIp: deps.settings.aiInvalidRateLimitPerIp,
       countsModelCalls: true,
     },

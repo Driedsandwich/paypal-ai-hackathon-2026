@@ -1,7 +1,7 @@
 import { createServer, type Server } from "node:http";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { createAiProviderFromEnv, FakeAiProvider } from "./ai/index.js";
+import { createAiProviderFromEnv, createFallbackProviderFromEnv, FakeAiProvider, withFallback } from "./ai/index.js";
 import { withAiBudget } from "./ai/budget.js";
 import { offlineReply } from "./ai/offline.js";
 import type { AiProvider } from "./ai/provider.js";
@@ -39,6 +39,8 @@ export interface AppOptions {
   paypalConfig?: PayPalConfig;
   paypal?: PayPalApi;
   ai?: AiProvider;
+  /** Second provider used when the primary fails or its budget is used up (AI_FALLBACK_PROVIDER). */
+  aiFallback?: AiProvider;
   /** Display info about primary and fallback AI providers (for the header). */
   aiInfo?: ApiDeps["aiInfo"];
   sales?: SaleRegistry;
@@ -73,9 +75,20 @@ export function buildDeps(options: AppOptions = {}): ApiDeps & { log: (msg: stri
   const limiter =
     options.limiter ??
     new AiLimiter({ perIpMax: settings.aiRateLimitPerIp, windowMs: settings.aiRateLimitWindowMinutes * 60_000, dailyCap: settings.aiDailyCap, invalidMax: settings.aiInvalidRateLimitPerIp });
-  // Every model call is debited from the daily AI budget (F9).
-  const ai = withAiBudget(options.ai ?? new FakeAiProvider([offlineReply]), limiter);
   const log = options.log ?? (() => {});
+  // Every model call is debited from the daily AI budget (F9); the fallback has its own.
+  const primary = withAiBudget(options.ai ?? new FakeAiProvider([offlineReply]), limiter);
+  let ai = primary;
+  let aiInfo = options.aiInfo;
+  if (options.aiFallback) {
+    const fallbackLimiter = new AiLimiter({ perIpMax: settings.aiRateLimitPerIp, windowMs: settings.aiRateLimitWindowMinutes * 60_000, dailyCap: settings.aiFallbackDailyCap });
+    limiter.setFallback(fallbackLimiter);
+    ai = withFallback(primary, withAiBudget(options.aiFallback, fallbackLimiter), log);
+    aiInfo ??= {
+      primary: { provider: primary.name, model: primary.model ?? null },
+      fallback: { provider: options.aiFallback.name, model: options.aiFallback.model ?? null },
+    };
+  }
   // Offline demo without DEMO_BUYER_EMAILS: three made-up buyers whose addresses never resolve.
   const buyers = new DemoBuyers(offlineDemo && settings.demoBuyerEmails.length === 0 ? offlineBuyerEmails() : settings.demoBuyerEmails);
   const sales = options.sales ?? new SaleRegistry();
@@ -110,7 +123,7 @@ export function buildDeps(options: AppOptions = {}): ApiDeps & { log: (msg: stri
     paypal,
     offline,
     sales,
-    ...(options.aiInfo ? { aiInfo: options.aiInfo } : {}),
+    ...(aiInfo ? { aiInfo } : {}),
     ai,
     agent: new Agent(ai, {
       fxJpyPerUsd: settings.fxJpyPerUsd,
@@ -218,13 +231,16 @@ if (isMain) {
   const settings = loadSettings();
   const paypalConfig = loadOptionalPayPalConfig();
   const ai = createAiProviderFromEnv(process.env, settings.aiMaxOutputTokens);
+  const fallback = createFallbackProviderFromEnv(process.env, settings.aiMaxOutputTokens);
   const log = (msg: string) => console.log(`[okuri] ${msg}`);
   const staticDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "public");
-  const options: AppOptions = { settings, ai, staticDir, log, ...(paypalConfig ? { paypalConfig } : {}) };
+  const options: AppOptions = { settings, ai, staticDir, log, ...(paypalConfig ? { paypalConfig } : {}), ...(fallback.provider ? { aiFallback: fallback.provider } : {}) };
   for (const w of legacySettingWarnings()) log(`warning: ${w}`);
+  if (fallback.warning) log(`warning: ${fallback.warning}`);
   const app = createApp(options);
   app.listen(settings.port, () => {
     log(`Listening on http://localhost:${settings.port}`);
+    if (fallback.provider) log(`AI fallback: ${fallback.provider.name}${fallback.provider.model ? ` (${fallback.provider.model})` : ""}, ${settings.aiFallbackDailyCap} calls/day`);
     log(`PayPal: ${settings.paypalOfflineDemo ? "offline demo (simulated in memory)" : paypalConfig ? paypalConfig.env : "not configured"} | AI: ${ai.name}${ai.model ? ` (${ai.model})` : ""} | payment path: ${settings.paymentPath}`);
     void warmUp(buildDeps(options), log);
   });

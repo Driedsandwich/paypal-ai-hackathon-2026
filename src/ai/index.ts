@@ -9,6 +9,7 @@ import type { AiProvider } from "./provider.js";
 export * from "./provider.js";
 export * from "./fake-provider.js";
 export * from "./ai-sdk-provider.js";
+export * from "./fallback.js";
 
 export const AI_PROVIDERS = ["anthropic", "google", "openai", "fake"] as const;
 export type AiProviderName = (typeof AI_PROVIDERS)[number];
@@ -40,6 +41,35 @@ export function parseAiProviderName(value: string | undefined): AiProviderName {
   throw new Error(`AI_PROVIDER must be one of ${AI_PROVIDERS.join(", ")} (got "${value}")`);
 }
 
+function sdkProvider(name: Exclude<AiProviderName, "fake">, apiKey: string, modelId: string, maxOutputTokens: number, timeoutMs?: number): AiSdkProvider {
+  const model =
+    name === "anthropic"
+      ? createAnthropic({ apiKey })(modelId)
+      : name === "google"
+        ? createGoogleGenerativeAI({ apiKey })(modelId)
+        : createOpenAI({ apiKey })(modelId);
+  const providerOptions = providerOptionsFor(name, modelId);
+  return new AiSdkProvider(name, modelId, model, { maxOutputTokens, ...(providerOptions ? { providerOptions } : {}), ...(timeoutMs ? { timeoutMs } : {}) });
+}
+
+/** The fallback answers within 30 s, so primary (45 s) + fallback stays under about 75 s. */
+export const AI_FALLBACK_TIMEOUT_MS = 30_000;
+
+/**
+ * Optional second provider from AI_FALLBACK_PROVIDER / AI_FALLBACK_MODEL / AI_FALLBACK_API_KEY.
+ * A missing key does not stop the server: the fallback is skipped with a warning.
+ */
+export function createFallbackProviderFromEnv(env: NodeJS.ProcessEnv = process.env, maxOutputTokens = 2000): { provider?: AiProvider; warning?: string } {
+  const raw = (env.AI_FALLBACK_PROVIDER ?? "").trim();
+  if (!raw) return {};
+  const name = parseAiProviderName(raw);
+  if (name === "fake") return { provider: new FakeAiProvider([offlineReply]) };
+  const apiKey = env.AI_FALLBACK_API_KEY ?? "";
+  if (!apiKey) return { warning: `AI_FALLBACK_PROVIDER=${name} is set but AI_FALLBACK_API_KEY is empty, so there is no fallback.` };
+  const modelId = (env.AI_FALLBACK_MODEL ?? "").trim() || DEFAULT_MODELS[name];
+  return { provider: sdkProvider(name, apiKey, modelId, maxOutputTokens, AI_FALLBACK_TIMEOUT_MS) };
+}
+
 /**
  * Picks a provider from AI_PROVIDER / AI_MODEL / AI_API_KEY.
  * Empty or "fake" selects the offline provider, which needs no key and no network.
@@ -50,12 +80,5 @@ export function createAiProviderFromEnv(env: NodeJS.ProcessEnv = process.env, ma
   const apiKey = env.AI_API_KEY ?? "";
   if (!apiKey) throw new Error(`AI_API_KEY is required for AI_PROVIDER=${name}`);
   const modelId = (env.AI_MODEL ?? "").trim() || DEFAULT_MODELS[name];
-  const model =
-    name === "anthropic"
-      ? createAnthropic({ apiKey })(modelId)
-      : name === "google"
-        ? createGoogleGenerativeAI({ apiKey })(modelId)
-        : createOpenAI({ apiKey })(modelId);
-  const providerOptions = providerOptionsFor(name, modelId);
-  return new AiSdkProvider(name, modelId, model, { maxOutputTokens, ...(providerOptions ? { providerOptions } : {}) });
+  return sdkProvider(name, apiKey, modelId, maxOutputTokens);
 }

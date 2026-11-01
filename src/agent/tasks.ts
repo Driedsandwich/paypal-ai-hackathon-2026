@@ -41,6 +41,8 @@ export interface AgentConfig {
 export interface GeneratedBy {
   provider: string;
   model?: string;
+  /** The primary provider that could not answer, when the fallback did (AI_FALLBACK_PROVIDER). */
+  fallback_from?: { provider: string; model?: string; reason: string };
 }
 
 export interface Listing extends ListingAi {
@@ -111,7 +113,7 @@ export class Agent {
 
   /** Task 1: Japanese item -> English listing, USD estimate, customs line, HS code candidate. */
   async draftListing(item: JpItem): Promise<Listing> {
-    const { value, provider, model } = await runJsonTask(this.ai, {
+    const { value, provider, model, fallbackFrom } = await runJsonTask(this.ai, {
       task: "draftListing",
       system: LISTING_SYSTEM,
       input: item,
@@ -130,7 +132,7 @@ export class Agent {
         note: `Estimate at ${fx} JPY per USD. Check the current rate and add shipping before you bill.`,
       },
       hs_code: { candidate: value.hs_code_candidate, label: "check before use" },
-      generated_by: { provider, ...(model ? { model } : {}) },
+      generated_by: { provider, ...(model ? { model } : {}), ...(fallbackFrom ? { fallback_from: fallbackFrom } : {}) },
     };
   }
 
@@ -146,26 +148,26 @@ export class Agent {
 
   /** Task 2 (invoice path): invoice draft + notification for seller approval. Nothing is sent here. */
   async prepareInvoice(listing: ListingForSale, buyer: Buyer, marker?: string): Promise<PreparedBilling<CreateAndSendInvoicePayload>> {
-    const { value, provider, model } = await this.buyerMessage(listing);
+    const { value, provider, model, fallbackFrom } = await this.buyerMessage(listing);
     const payload = buildInvoicePayload(listing, buyer.alias, value, this.config.sellerBusinessName, marker);
     return {
       payload,
       buyer_message: value,
-      generated_by: { provider, ...(model ? { model } : {}) },
+      generated_by: { provider, ...(model ? { model } : {}), ...(fallbackFrom ? { fallback_from: fallbackFrom } : {}) },
     };
   }
 
   /** Task 2 (order path, spec 3.5): Orders v2 payment link for seller approval. */
   async preparePaymentLink(listing: ListingForSale, buyer: Buyer, marker?: string): Promise<PreparedBilling<CreatePaymentLinkPayload>> {
-    const { value, provider, model } = await this.buyerMessage(listing);
+    const { value, provider, model, fallbackFrom } = await this.buyerMessage(listing);
     const payload = buildOrderPayload(listing, buyer.alias, this.config, marker);
-    return { payload, buyer_message: value, generated_by: { provider, ...(model ? { model } : {}) } };
+    return { payload, buyer_message: value, generated_by: { provider, ...(model ? { model } : {}), ...(fallbackFrom ? { fallback_from: fallbackFrom } : {}) } };
   }
 
   /** Task 3: reminder text per unpaid invoice. Only invoice ids from the input are kept. */
   async nudgeUnpaid(invoices: UnpaidInvoice[]): Promise<{ reminders: PreparedReminder[]; generated_by: GeneratedBy }> {
     if (invoices.length === 0) return { reminders: [], generated_by: { provider: this.ai.name } };
-    const { value, provider, model } = await runJsonTask(this.ai, {
+    const { value, provider, model, fallbackFrom } = await runJsonTask(this.ai, {
       task: "nudgeUnpaid",
       system: NUDGE_SYSTEM,
       input: { invoices },
@@ -180,12 +182,12 @@ export class Agent {
       seen.add(r.invoice_id);
       reminders.push({ invoice_id: r.invoice_id, payload: standardReminderPayload(r.invoice_id), copy_for_dm: r.message });
     }
-    return { reminders, generated_by: { provider, ...(model ? { model } : {}) } };
+    return { reminders, generated_by: { provider, ...(model ? { model } : {}), ...(fallbackFrom ? { fallback_from: fallbackFrom } : {}) } };
   }
 
   /** Task 4: evidence summary, timeline, attachments and an English reply draft. */
   async disputeEvidencePack(input: EvidenceInput): Promise<EvidencePack> {
-    const { value, provider, model } = await runJsonTask(this.ai, {
+    const { value, provider, model, fallbackFrom } = await runJsonTask(this.ai, {
       task: "disputeEvidencePack",
       system: EVIDENCE_SYSTEM,
       input,
@@ -244,7 +246,7 @@ export class Agent {
       attachments: described,
       evidence_payload: { disputeId: input.dispute.dispute_id, evidences: [evidence], attachments },
       message_payload: { disputeId: input.dispute.dispute_id, message: value.reply_draft },
-      generated_by: { provider, ...(model ? { model } : {}) },
+      generated_by: { provider, ...(model ? { model } : {}), ...(fallbackFrom ? { fallback_from: fallbackFrom } : {}) },
     };
   }
 }

@@ -75,7 +75,7 @@ export interface Money {
   value: string;
 }
 
-export type GeneratedBy = { provider: string; model?: string };
+export type GeneratedBy = { provider: string; model?: string; fallback_from?: { provider: string; model?: string; reason: string } };
 
 export type JourneyAction = "prepare_invoice" | "remind" | "add_tracking" | "build_evidence" | "simulate_payment" | "simulate_dispute" | "simulate_delivery";
 
