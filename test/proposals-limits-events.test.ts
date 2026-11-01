@@ -129,7 +129,9 @@ describe("PayPal executor", () => {
   });
 
   it("provide_dispute_evidence decodes base64 attachments into evidence-file parts", async () => {
-    const { client, apiCalls } = paypalWith(() => ({ json: { links: [] } }));
+    const { client, apiCalls } = paypalWith((c) =>
+      c.method === "GET" ? { json: { dispute_id: "D1", links: [{ rel: "provide_evidence", href: `${SANDBOX}/v1/customer/disputes/D1/provide-evidence`, method: "POST" }] } } : { json: { links: [] } },
+    );
     const exec = createPayPalExecutor(() => client, { buyers: BUYERS });
     await exec(
       "provide_dispute_evidence",
@@ -140,7 +142,8 @@ describe("PayPal executor", () => {
       },
       CTX,
     );
-    expect(apiCalls()[0]!.form?.[1]).toEqual({ name: "evidence-file", value: "%PDF-1.4", filename: "invoice.pdf", type: "application/pdf" });
+    expect(apiCalls().map((c) => c.method)).toEqual(["GET", "POST"]); // re-check, then write
+    expect(apiCalls()[1]!.form?.[1]).toEqual({ name: "evidence-file", value: "%PDF-1.4", filename: "invoice.pdf", type: "application/pdf" });
   });
 });
 

@@ -46,8 +46,10 @@ PayPal until the seller clicks Approve**, and the server enforces that.
 7. **Disputes:** open a dispute as the sandbox buyer (Resolution Center), then *Open* it here,
    add the invoice id and tracking, and click *Build evidence pack with AI*. You get a summary,
    a timeline, a PDF invoice summary to attach, and an English reply. Any date, amount or
-   tracking number the AI wrote that is not in the PayPal data is flagged in red. Approve
-   *Provide evidence* and/or *Send reply*.
+   tracking number the AI wrote that is not in the PayPal data is flagged in red. Only the
+   actions PayPal currently allows become proposals (*Send reply* only while the dispute is an
+   inquiry; *Provide evidence* only when PayPal asks for it). The app checks again right before
+   sending; if the dispute has moved on, the proposal is marked *obsolete* and nothing is sent.
 8. **Dashboard → Ask Okuri:** free chat (Japanese or English). The agent can look things up
    in PayPal; anything it wants to send becomes a proposal in the approvals panel.
 

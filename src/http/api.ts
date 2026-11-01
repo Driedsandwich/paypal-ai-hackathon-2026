@@ -11,6 +11,7 @@ import type { EventCategory, EventLog } from "../events/log.js";
 import type { AiLimiter } from "../limits/rate-limit.js";
 import { showMoney } from "../money.js";
 import { carrierFor } from "../paypal/carriers.js";
+import { allowedActionList, disputeActions } from "../paypal/dispute-actions.js";
 import type { PayPalClient } from "../paypal/client.js";
 import type { PayPalConfig } from "../paypal/config.js";
 import type { Invoice } from "../paypal/types.js";
@@ -338,6 +339,7 @@ const ROUTES: Route[] = [
           create_time: d.create_time,
           seller_response_due_date: d.seller_response_due_date,
           transaction_id: tx?.seller_transaction_id,
+          allowed_actions: allowedActionList(d),
         },
         ...(inv
           ? {
@@ -357,11 +359,15 @@ const ROUTES: Route[] = [
         ...(body.seller_notes ? { seller_notes: body.seller_notes } : {}),
       });
       const pack = await deps.agent.disputeEvidencePack(input);
+      // Only actions PayPal currently allows on this dispute become proposals (F11).
+      const allowed = disputeActions(d);
       const proposals = {
-        provide_evidence: publicProposal(ctx, propose(ctx, "provide_dispute_evidence", `Provide evidence for dispute ${d.dispute_id}`, pack.evidence_payload)),
-        send_message: publicProposal(ctx, propose(ctx, "send_dispute_message", `Send reply to buyer in dispute ${d.dispute_id}`, pack.message_payload)),
+        ...(allowed.provide_evidence.allowed
+          ? { provide_evidence: publicProposal(ctx, propose(ctx, "provide_dispute_evidence", `Provide evidence for dispute ${d.dispute_id}`, pack.evidence_payload)) }
+          : {}),
+        ...(allowed.send_message.allowed ? { send_message: publicProposal(ctx, propose(ctx, "send_dispute_message", `Send reply to buyer in dispute ${d.dispute_id}`, pack.message_payload)) } : {}),
       };
-      ok(res, { pack: publicPack(pack), proposals });
+      ok(res, { pack: publicPack(pack), proposals, allowed_actions: allowed });
     },
   },
   {
@@ -370,7 +376,8 @@ const ROUTES: Route[] = [
     handler: async (ctx) => {
       const { req, res, deps, params } = ctx;
       const body = z.object({ note: z.string().trim().min(1).max(2000) }).parse(await readJsonBody(req, MAX_API_BODY));
-      requirePayPal(deps);
+      const verdict = disputeActions(await requirePayPal(deps).getDispute(params[0]!)).accept_claim;
+      if (!verdict.allowed) throw new HttpError(409, "action_not_allowed", verdict.reason);
       ok(res, { proposal: publicProposal(ctx, propose(ctx, "accept_dispute_claim", `Accept claim and refund the buyer in dispute ${params[0]}`, { disputeId: params[0]!, note: body.note })) }, 201);
     },
   },

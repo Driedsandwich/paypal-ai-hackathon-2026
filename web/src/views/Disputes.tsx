@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, type Health, type Money, type Proposal } from "../api";
-import { AiBadge, ErrorBox, ProposalCard, useAction } from "../components";
+import { AiBadge, CopyForDm, ErrorBox, ProposalCard, useAction } from "../components";
 
 interface DisputeRow {
   dispute_id: string;
@@ -27,7 +27,11 @@ export function DisputesView({ health, onProposal }: { health: Health; onProposa
   const [rows, setRows] = useState<DisputeRow[] | null>(null);
   const [selected, setSelected] = useState<DisputeRow | null>(null);
   const [form, setForm] = useState({ invoice_id: "", carrier: "Japan Post", tracking_number: "", shipped_date: "", seller_notes: "" });
-  const [result, setResult] = useState<{ pack: Pack; proposals: { provide_evidence: Proposal; send_message: Proposal } } | null>(null);
+  const [result, setResult] = useState<{
+    pack: Pack;
+    proposals: { provide_evidence?: Proposal; send_message?: Proposal };
+    allowed_actions: Record<"send_message" | "provide_evidence" | "accept_claim", { allowed: boolean; reason: string }>;
+  } | null>(null);
   const [accept, setAccept] = useState<Proposal | null>(null);
   const set = (k: keyof typeof form) => (e: { target: { value: string } }) => setForm({ ...form, [k]: e.target.value });
 
@@ -65,7 +69,7 @@ export function DisputesView({ health, onProposal }: { health: Health; onProposa
               <tr key={d.dispute_id}>
                 <td><code>{d.dispute_id}</code></td>
                 <td>{d.reason}</td>
-                <td><span className="badge warn">{d.status}</span></td>
+                <td><span className="badge warn">{d.status}</span>{d.stage && <span className="badge">{d.stage}</span>}</td>
                 <td>{d.amount?.value} {d.amount?.currency_code}</td>
                 <td>{d.seller_response_due_date?.slice(0, 10)}</td>
                 <td><button className="secondary" onClick={() => { setSelected(d); setResult(null); setAccept(null); }}>Open</button></td>
@@ -105,8 +109,19 @@ export function DisputesView({ health, onProposal }: { health: Health; onProposa
           {result.pack.missing_information.length > 0 && <p className="muted">Missing: {result.pack.missing_information.join("; ")}</p>}
           <table><tbody>{result.pack.timeline.map((t, i) => <tr key={i}><td>{t.date}</td><td>{t.event}</td><td className="muted">{t.source}</td></tr>)}</tbody></table>
           <p className="muted">Attachments: {result.pack.attachments.map((a) => `${a.name} (${a.description})`).join(", ") || "none"}</p>
-          <ProposalCard proposal={result.proposals.provide_evidence} onChange={onProposal}><p className="muted">Evidence notes: {result.pack.evidence_notes}</p></ProposalCard>
-          <ProposalCard proposal={result.proposals.send_message} onChange={onProposal}><p style={{ whiteSpace: "pre-wrap" }}>{result.pack.reply_draft}</p></ProposalCard>
+          {result.proposals.provide_evidence ? (
+            <ProposalCard proposal={result.proposals.provide_evidence} onChange={onProposal}><p className="muted">Evidence notes: {result.pack.evidence_notes}</p></ProposalCard>
+          ) : (
+            <p className="muted">No evidence proposal: {result.allowed_actions.provide_evidence.reason}</p>
+          )}
+          {result.proposals.send_message ? (
+            <ProposalCard proposal={result.proposals.send_message} onChange={onProposal}><p style={{ whiteSpace: "pre-wrap" }}>{result.pack.reply_draft}</p></ProposalCard>
+          ) : (
+            <>
+              <p className="muted">No message proposal: {result.allowed_actions.send_message.reason}</p>
+              <CopyForDm text={result.pack.reply_draft} />
+            </>
+          )}
         </div>
       )}
     </section>

@@ -100,7 +100,8 @@ If something important is missing, list it in missing_information and set recomm
 - timeline: dated events, each citing its source field.
 - reply_draft: a calm, polite English message to the buyer (max 2000 characters).
 - evidence_notes: notes for PayPal explaining the evidence (max 2000 characters).
-- recommended_action: provide_evidence when shipment proof exists for an item-not-received case; send_message when the case is still an inquiry; accept_claim only if the seller notes say they want to refund.`;
+- recommended_action: provide_evidence when shipment proof exists for an item-not-received case; send_message when the case is still an inquiry; accept_claim only if the seller notes say they want to refund.
+  Only recommend an action listed in dispute.allowed_actions (what PayPal currently allows); otherwise use needs_seller_input.`;
 
 export class Agent {
   constructor(

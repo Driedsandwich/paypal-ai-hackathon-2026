@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { AiMessage, AiProvider, AiToolSpec } from "../ai/provider.js";
 import { carrierFor } from "../paypal/carriers.js";
+import { allowedActionList, disputeActions, type DisputeAction } from "../paypal/dispute-actions.js";
 import type { PayPalClient } from "../paypal/client.js";
 import type { Invoice } from "../paypal/types.js";
 import type { DemoBuyers } from "../demo/buyers.js";
@@ -60,6 +61,13 @@ export function agentTools(deps: ToolDeps): AiToolSpec[] {
       deps.proposals.propose(kind, title, payload, { owner: deps.sessionId, ...(copyForDm ? { copyForDm } : {}) }),
   };
 
+  /** An error for the model when PayPal does not currently allow this dispute action. */
+  const disputeRefusal = async (disputeId: string, action: DisputeAction): Promise<{ error: string } | undefined> => {
+    if (!paypal) return NOT_CONFIGURED;
+    const verdict = disputeActions(await paypal.getDispute(disputeId))[action];
+    return verdict.allowed ? undefined : { error: verdict.reason };
+  };
+
   const tools: AiToolSpec[] = [
     tool("list_invoices", "List the seller's recent PayPal invoices with status and amounts.", z.object({ page: z.number().int().min(1).max(100).optional(), page_size: z.number().int().min(1).max(50).optional() }), (i) =>
       read(async (pp) => {
@@ -79,7 +87,15 @@ export function agentTools(deps: ToolDeps): AiToolSpec[] {
     tool("get_dispute", "Get one PayPal dispute by id, including messages.", z.object({ dispute_id: z.string().min(1).max(255) }), (i) =>
       read(async (pp) => {
         const d = await pp.getDispute(i.dispute_id);
-        return { dispute_id: d.dispute_id, reason: d.reason, status: d.status, stage: d.dispute_life_cycle_stage, amount: d.dispute_amount, messages: d.messages?.map((m) => ({ posted_by: m.posted_by, time_posted: m.time_posted, content: m.content })) };
+        return {
+          dispute_id: d.dispute_id,
+          reason: d.reason,
+          status: d.status,
+          stage: d.dispute_life_cycle_stage,
+          amount: d.dispute_amount,
+          allowed_actions: allowedActionList(d),
+          messages: d.messages?.map((m) => ({ posted_by: m.posted_by, time_posted: m.time_posted, content: m.content })),
+        };
       }),
     ),
     tool("get_order", "Get an Orders v2 order (payment link) by id.", z.object({ order_id: z.string().min(1).max(36) }), (i) =>
@@ -120,11 +136,25 @@ export function agentTools(deps: ToolDeps): AiToolSpec[] {
         return { error: "Give order_id and capture_id (payment link) or transaction_id (invoice payment)." };
       },
     ),
-    tool("send_dispute_message", "Propose an English message to the buyer in a dispute. The seller must approve.", z.object({ dispute_id: z.string().min(1).max(255), message: z.string().min(1).max(2000) }), async (i) =>
-      pending(proposals.propose("send_dispute_message", `Send message in dispute ${i.dispute_id}`, { disputeId: i.dispute_id, message: i.message })),
+    tool(
+      "send_dispute_message",
+      "Propose an English message to the buyer in a dispute (only possible while PayPal allows messages, i.e. the dispute is an inquiry). The seller must approve.",
+      z.object({ dispute_id: z.string().min(1).max(255), message: z.string().min(1).max(2000) }),
+      async (i) => {
+        const refused = await disputeRefusal(i.dispute_id, "send_message");
+        if (refused) return refused;
+        return pending(proposals.propose("send_dispute_message", `Send message in dispute ${i.dispute_id}`, { disputeId: i.dispute_id, message: i.message }));
+      },
     ),
-    tool("accept_dispute_claim", "Propose accepting a dispute claim (refunds the buyer). The seller must approve.", z.object({ dispute_id: z.string().min(1).max(255), note: z.string().min(1).max(2000) }), async (i) =>
-      pending(proposals.propose("accept_dispute_claim", `Accept claim and refund in dispute ${i.dispute_id}`, { disputeId: i.dispute_id, note: i.note })),
+    tool(
+      "accept_dispute_claim",
+      "Propose accepting a dispute claim (refunds the buyer), only if PayPal allows it on this dispute. The seller must approve.",
+      z.object({ dispute_id: z.string().min(1).max(255), note: z.string().min(1).max(2000) }),
+      async (i) => {
+        const refused = await disputeRefusal(i.dispute_id, "accept_claim");
+        if (refused) return refused;
+        return pending(proposals.propose("accept_dispute_claim", `Accept claim and refund in dispute ${i.dispute_id}`, { disputeId: i.dispute_id, note: i.note }));
+      },
     ),
   ];
 

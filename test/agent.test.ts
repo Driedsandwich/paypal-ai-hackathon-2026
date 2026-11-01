@@ -197,7 +197,17 @@ describe("free chat with tools", () => {
   });
 
   it("state-changing tools only create pending proposals", async () => {
-    const { client, apiCalls } = paypalWith(() => ({ json: {} }));
+    const { client, apiCalls } = paypalWith((c) =>
+      c.url.includes("/v1/customer/disputes/PP-D-1")
+        ? {
+            json: {
+              dispute_id: "PP-D-1",
+              dispute_life_cycle_stage: "INQUIRY",
+              links: ["send-message", "accept-claim"].map((a) => ({ rel: a.replace("-", "_"), href: `https://api-m.sandbox.paypal.com/v1/customer/disputes/PP-D-1/${a}`, method: "POST" })),
+            },
+          }
+        : { json: {} },
+    );
     const proposals = new ProposalStore(async () => {
       throw new Error("must not run without approval");
     });
@@ -221,7 +231,7 @@ describe("free chat with tools", () => {
       ["add_invoice_tracking", "pending"],
       ["send_invoice_reminder", "pending"],
     ]);
-    expect(apiCalls()).toHaveLength(0);
+    expect(apiCalls().filter((c) => c.method !== "GET")).toHaveLength(0); // only reads (dispute checks)
     expect((res.proposals[3]!.payload as { trackers: Array<{ carrier: string }> }).trackers[0]!.carrier).toBe("JPN_JAPAN_POST");
     expect(res.proposals[0]!.payload).toMatchObject({ recipient_alias: "Demo buyer 2" });
     expect(res.proposals[4]).toMatchObject({ title: "Send PayPal's standard reminder for invoice INV2-1", copyForDm: "Friendly reminder to pay.", payload: { invoiceId: "INV2-1", notification: { send_to_recipient: true, send_to_invoicer: true } } });

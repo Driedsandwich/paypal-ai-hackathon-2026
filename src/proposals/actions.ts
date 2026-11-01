@@ -10,6 +10,7 @@ import type {
   ShippingTracker,
 } from "../paypal/types.js";
 import { PayPalApiError } from "../paypal/client.js";
+import { disputeActions, type DisputeAction } from "../paypal/dispute-actions.js";
 import type { OrderRegistry } from "./order-registry.js";
 import { REMINDERS_PER_INVOICE_PER_DAY, type ReminderLedger } from "./reminder-ledger.js";
 import { ProposalObsoleteError, ProposalPolicyError, type ExecutionContext, type ProposalKind } from "./store.js";
@@ -148,6 +149,15 @@ async function createLink(paypal: PayPalClient, opts: ExecutorOptions, p: Create
 }
 
 /**
+ * Re-reads the dispute right before a dispute write and refuses (obsolete) when PayPal no
+ * longer allows that action. The approved payload is never changed.
+ */
+async function requireDisputeAction(paypal: PayPalClient, disputeId: string, action: DisputeAction): Promise<void> {
+  const verdict = disputeActions(await paypal.getDispute(disputeId))[action];
+  if (!verdict.allowed) throw new ProposalObsoleteError(`${verdict.reason} Nothing was sent. Build a new proposal if the dispute changes.`);
+}
+
+/**
  * The only place in the app that calls PayPal write methods.
  * Used by ProposalStore.approve().
  */
@@ -192,6 +202,7 @@ export function createPayPalExecutor(getPayPal: () => PayPalClient, opts: Execut
       }
       case "provide_dispute_evidence": {
         const p = payload as ProvideEvidencePayload;
+        await requireDisputeAction(paypal, p.disputeId, "provide_evidence");
         const files = p.attachments.map((a) => ({
           name: a.name,
           contentType: a.contentType,
@@ -201,10 +212,12 @@ export function createPayPalExecutor(getPayPal: () => PayPalClient, opts: Execut
       }
       case "send_dispute_message": {
         const p = payload as SendDisputeMessagePayload;
+        await requireDisputeAction(paypal, p.disputeId, "send_message");
         return paypal.sendDisputeMessage(p.disputeId, p.message);
       }
       case "accept_dispute_claim": {
         const p = payload as AcceptClaimPayload;
+        await requireDisputeAction(paypal, p.disputeId, "accept_claim");
         return paypal.acceptDisputeClaim(p.disputeId, p.note);
       }
       case "seed_demo_data": {

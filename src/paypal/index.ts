@@ -3,3 +3,4 @@ export * from "./client.js";
 export * from "./types.js";
 export * from "./carriers.js";
 export * from "./webhook.js";
+export * from "./dispute-actions.js";

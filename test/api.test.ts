@@ -28,6 +28,12 @@ async function start(options: AppOptions = {}) {
 /** Two sandbox buyers, so tests have "Demo buyer 1" and "Demo buyer 2". */
 const BUYERS = { DEMO_BUYER_EMAILS: `${fakeEmail("b1")},${fakeEmail("b2")}` };
 
+/** HATEOAS action links as a dispute returns them. */
+const disputeLinks = (id: string, actions: string[]) => [
+  { href: `${SANDBOX}/v1/customer/disputes/${id}`, rel: "self", method: "GET" },
+  ...actions.map((a) => ({ href: `${SANDBOX}/v1/customer/disputes/${id}/${a}`, rel: a.replace(/-/g, "_"), method: "POST" })),
+];
+
 const WRITE = (c: RecordedCall) => c.method !== "GET" && !c.url.endsWith("/v1/oauth2/token");
 
 const TEA_ITEM = { title_ja: "手作り 抹茶碗 陶器", description_ja: "ろくろで作りました。", price_jpy: 12000, condition: "handmade" };
@@ -60,7 +66,18 @@ function sandbox(overrides: (c: RecordedCall) => { status?: number; json?: unkno
     if (/^\/v2\/invoicing\/invoices\/[^/]+\/remind$/.test(u)) return { status: 204 };
     if (u.startsWith("/v1/customer/disputes?")) return { json: { items: [{ dispute_id: "PP-D-1", reason: "MERCHANDISE_OR_SERVICE_NOT_RECEIVED", status: "WAITING_FOR_SELLER_RESPONSE" }] } };
     if (u === "/v1/customer/disputes/PP-D-1") {
-      return { json: { dispute_id: "PP-D-1", reason: "MERCHANDISE_OR_SERVICE_NOT_RECEIVED", status: "WAITING_FOR_SELLER_RESPONSE", dispute_amount: { currency_code: "USD", value: "40.00" }, create_time: "2026-10-28T03:00:00Z", messages: [{ posted_by: "BUYER", content: "Where is my item?" }] } };
+      return {
+        json: {
+          dispute_id: "PP-D-1",
+          reason: "MERCHANDISE_OR_SERVICE_NOT_RECEIVED",
+          status: "WAITING_FOR_SELLER_RESPONSE",
+          dispute_life_cycle_stage: "INQUIRY",
+          dispute_amount: { currency_code: "USD", value: "40.00" },
+          create_time: "2026-10-28T03:00:00Z",
+          messages: [{ posted_by: "BUYER", content: "Where is my item?" }],
+          links: disputeLinks("PP-D-1", ["send-message", "provide-evidence", "accept-claim"]),
+        },
+      };
     }
     if (u === "/v1/shipping/trackers-batch") return { json: { tracker_identifiers: [{ transaction_id: "8MC585209K746392H" }], errors: [] } };
     if (u === "/v2/checkout/orders" && c.method === "POST") return { json: { id: "5O190127TN364715T", status: "PAYER_ACTION_REQUIRED", links: [{ rel: "payer-action", href: "https://www.sandbox.paypal.com/checkoutnow?token=5O190127TN364715T" }] } };

@@ -81,6 +81,8 @@ export const EvidenceInputSchema = z.object({
     create_time: z.string().optional(),
     seller_response_due_date: z.string().optional(),
     transaction_id: z.string().optional(),
+    /** What PayPal currently allows the seller to do (send_message, provide_evidence, accept_claim). */
+    allowed_actions: z.array(z.string()).max(5).optional(),
   }),
   invoice: z
     .object({

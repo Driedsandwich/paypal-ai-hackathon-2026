@@ -273,6 +273,12 @@ export interface Dispute extends DisputeSummary {
   }>;
   messages?: DisputeMessage[];
   evidences?: unknown[];
+  /** `allowed_response_options` (acknowledge_return_item, accept_claim, make_offer). */
+  allowed_response_options?: {
+    accept_claim?: { accept_claim_types?: string[] };
+    make_offer?: unknown;
+    acknowledge_return_item?: unknown;
+  };
   [key: string]: unknown;
 }
 
