@@ -145,6 +145,15 @@ export class SaleRegistry {
     return this.all().find((s) => s.transactionId === transactionId);
   }
 
+  /**
+   * The sale whose payment has this seller transaction id, as a dispute names it in
+   * `disputed_transactions[].seller_transaction_id`: the invoice payment's transaction id or
+   * the order's capture id. (Tracking keeps using `byTransaction`, invoice payments only.)
+   */
+  bySellerTransaction(id: string): Sale | undefined {
+    return this.all().find((s) => s.transactionId === id || s.captureId === id);
+  }
+
   attachInvoice(saleId: string, invoiceId: string, invoiceNumber?: string): Sale | undefined {
     const sale = this.sales.get(saleId);
     if (!sale) return undefined;

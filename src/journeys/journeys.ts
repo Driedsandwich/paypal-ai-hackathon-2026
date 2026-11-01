@@ -1,7 +1,8 @@
 import type { DemoBuyers } from "../demo/buyers.js";
-import type { DisputeSummary, Invoice, Money } from "../paypal/types.js";
+import type { Invoice, Money } from "../paypal/types.js";
 import { publicProposal } from "../http/dto.js";
 import type { Proposal } from "../proposals/store.js";
+import { disputeMatchesSale, type DisputeView } from "./disputes.js";
 import { COUNTRIES, parseSaleMarker, type Sale, type SaleRegistry } from "./sales.js";
 
 // Builds the "transaction journey" view (S3): one sale followed through five steps
@@ -62,11 +63,10 @@ export function saleFromInvoice(inv: Invoice, buyers: DemoBuyers): Sale | undefi
   };
 }
 
-function disputeOf(sale: Sale, disputes: DisputeSummary[]): DisputeSummary | undefined {
-  return disputes.find((d) => {
-    const txs = (d.disputed_transactions ?? []) as Array<{ seller_transaction_id?: string; invoice_number?: string }>;
-    return txs.some((t) => (sale.transactionId && t.seller_transaction_id === sale.transactionId) || (sale.invoiceNumber && t.invoice_number === sale.invoiceNumber));
-  });
+/** The dispute about this sale's payment (an open one first, if the buyer opened several). */
+function disputeOf(sale: Sale, disputes: DisputeView[]): DisputeView | undefined {
+  const mine = disputes.filter((v) => disputeMatchesSale(v.dispute, sale));
+  return mine.find((v) => v.dispute.status !== "RESOLVED") ?? mine[0];
 }
 
 function money(m: Money | undefined): Money | undefined {
@@ -76,7 +76,8 @@ function money(m: Money | undefined): Money | undefined {
 export interface JourneyContext {
   sales: Sale[];
   invoices: Map<string, Invoice>;
-  disputes: DisputeSummary[];
+  /** PayPal's dispute list plus disputes known from webhooks or by id. */
+  disputes: DisputeView[];
   /** The visitor's proposals (any status), newest first. */
   proposals: Proposal[];
   offline: boolean;
@@ -103,7 +104,9 @@ export function buildJourney(sale: Sale, ctx: JourneyContext) {
   const done = [true, billed, paid, tracked, delivered];
   const current = done.indexOf(false) + 1 || 6; // 1-based; 6 = all done
 
-  const dispute = paid ? disputeOf(sale, ctx.disputes) : undefined;
+  // Only a payment can be disputed: the invoice transaction id or the order capture id.
+  const disputeView = sale.transactionId || sale.captureId || paid ? disputeOf(sale, ctx.disputes) : undefined;
+  const dispute = disputeView?.dispute;
   if (dispute && !sale.activity.some((a) => a.text.startsWith("Buyer opened a dispute"))) {
     ctx.registry.note(sale, "Buyer opened a dispute", dispute.create_time ?? new Date().toISOString());
   }
@@ -190,6 +193,8 @@ export function buildJourney(sale: Sale, ctx: JourneyContext) {
           due: dispute.seller_response_due_date,
           open: disputeOpen,
           from_step: tracked ? 4 : 3,
+          /** False while PayPal's list does not return the case yet (known by webhook or by id). */
+          in_paypal_list: disputeView!.inList,
           proposals: disputeProposals.filter((p) => p.status === "pending").map((p) => publicProposal(p, ctx.buyers)),
         }
       : undefined,

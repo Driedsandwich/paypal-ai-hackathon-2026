@@ -25,6 +25,7 @@ import { DemoBuyers } from "./demo/buyers.js";
 import { ProposalObsoleteError, ProposalPolicyError, ProposalStore } from "./proposals/store.js";
 import { MoneyError } from "./money.js";
 import { SaleRegistry } from "./journeys/sales.js";
+import { DisputeRegistry } from "./journeys/disputes.js";
 import { OfflineWorlds, offlineBuyerEmails } from "./journeys/offline-world.js";
 import type { PayPalApi } from "./paypal/offline.js";
 
@@ -44,6 +45,8 @@ export interface AppOptions {
   /** Display info about primary and fallback AI providers (for the header). */
   aiInfo?: ApiDeps["aiInfo"];
   sales?: SaleRegistry;
+  /** Known dispute ids (list, webhooks, by id). */
+  disputes?: DisputeRegistry;
   events?: EventLog;
   proposals?: ProposalStore;
   limiter?: AiLimiter;
@@ -123,6 +126,7 @@ export function buildDeps(options: AppOptions = {}): ApiDeps & { log: (msg: stri
     paypal,
     offline,
     sales,
+    disputes: options.disputes ?? new DisputeRegistry(),
     ...(aiInfo ? { aiInfo } : {}),
     ai,
     agent: new Agent(ai, {

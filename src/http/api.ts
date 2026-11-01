@@ -32,7 +32,7 @@ import { buildJourney, journeyCounts, saleFromInvoice } from "../journeys/journe
 import type { OfflineWorlds } from "../journeys/offline-world.js";
 import { recordExecution } from "../journeys/record.js";
 import { COUNTRIES, isCountry, saleMarker, type Sale, type SaleRegistry } from "../journeys/sales.js";
-import type { DisputeSummary } from "../paypal/types.js";
+import { knownDisputes, readAndRegister, saleOfDispute as linkedSale, type DisputeRegistry, type DisputeView } from "../journeys/disputes.js";
 
 export interface ApiDeps {
   settings: AppSettings;
@@ -43,6 +43,8 @@ export interface ApiDeps {
   offline: OfflineWorlds | undefined;
   /** Sales (journeys) started on this server; also the tracking allowlist. */
   sales: SaleRegistry;
+  /** Dispute ids known from PayPal's list, verified webhooks and reads by id (pass 3a). */
+  disputes: DisputeRegistry;
   ai: AiProvider;
   /** Display info about the AI providers (primary and optional fallback). */
   aiInfo?: { primary: { provider: string; model: string | null }; fallback?: { provider: string; model: string | null } };
@@ -110,15 +112,24 @@ function ownDraftSale(ctx: Ctx, saleId: string | undefined): Sale | undefined {
   return sale && sale.owner === ctx.session && !sale.invoiceId && !sale.orderId ? sale : undefined;
 }
 
-/** The sale a dispute belongs to (by payment transaction or invoice number). */
+/** The sale a dispute belongs to (invoice transaction id, order capture id or invoice number). */
 function saleOfDispute(deps: ApiDeps, d: { disputed_transactions?: Array<{ seller_transaction_id?: string; invoice_number?: string }> }): Sale | undefined {
-  for (const t of d.disputed_transactions ?? []) {
-    const byTx = t.seller_transaction_id ? deps.sales.byTransaction(t.seller_transaction_id) : undefined;
-    if (byTx) return byTx;
-    const byNumber = t.invoice_number ? deps.sales.all().find((s) => s.invoiceNumber === t.invoice_number) : undefined;
-    if (byNumber) return byNumber;
-  }
-  return undefined;
+  return linkedSale(deps.sales, d);
+}
+
+function discoveryDeps(deps: ApiDeps) {
+  return { reads: deps.reads, disputes: deps.disputes, offline: Boolean(deps.offline) };
+}
+
+/** A warning line for a PayPal read that failed (with PayPal's debug_id when there is one). */
+function readWarning(err: unknown, what: string): string {
+  return err instanceof Error && "debugId" in err ? `${what} could not be read (debug_id ${(err as { debugId?: string }).debugId ?? "-"}); showing what this app knows.` : `${what} could not be read; showing what this app knows.`;
+}
+
+/** A row of the dispute list, with where the app learned about it and the linked sale. */
+function knownDisputeRow(deps: ApiDeps, v: DisputeView) {
+  const sale = saleOfDispute(deps, v.dispute);
+  return { ...disputeRow(v.dispute), in_paypal_list: v.inList, sources: v.sources, ...(sale ? { sale_id: sale.id } : {}) };
 }
 
 /** Resolves a buyer alias, or explains which aliases exist. */
@@ -460,15 +471,21 @@ const ROUTES: Route[] = [
     paypalRead: true,
     handler: async (ctx) => {
       const { res, deps } = ctx;
-      const list = await deps.reads.listDisputes(requirePayPal(ctx), { page_size: 50 });
-      ok(res, { disputes: (list.items ?? []).map(disputeRow) });
+      // PayPal's list can lag behind new cases by minutes: add the ones known from webhooks or by id.
+      const { items, listError } = await knownDisputes(discoveryDeps(deps), requirePayPal(ctx));
+      if (listError !== undefined && items.length === 0) throw listError;
+      ok(res, { disputes: items.map((v) => knownDisputeRow(deps, v)), warnings: listError !== undefined ? [readWarning(listError, "PayPal's dispute list")] : [] });
     },
   },
   {
     method: "GET",
     pattern: /^\/api\/disputes\/([A-Za-z0-9_-]+)$/,
     paypalRead: true,
-    handler: async (ctx) => ok(ctx.res, disputeDetail(await requirePayPal(ctx).getDispute(ctx.params[0]!))),
+    handler: async (ctx) => {
+      const d = await readAndRegister(discoveryDeps(ctx.deps), requirePayPal(ctx), ctx.params[0]!, "by_id");
+      const sale = saleOfDispute(ctx.deps, d);
+      ok(ctx.res, { ...disputeDetail(d), ...(sale ? { sale_id: sale.id } : {}) });
+    },
   },
   {
     method: "POST",
@@ -708,7 +725,7 @@ async function journeysFor(ctx: Ctx) {
   const { deps } = ctx;
   const paypal = ctx.paypal;
   let invoices: Map<string, Invoice> = new Map();
-  let disputes: DisputeSummary[] = [];
+  let disputes: DisputeView[] = [];
   const warnings: string[] = [];
   if (paypal) {
     try {
@@ -716,9 +733,11 @@ async function journeysFor(ctx: Ctx) {
       invoices = new Map((list.items ?? []).map((inv) => [inv.id, inv]));
       // After a restart: recognise this app's invoices by their marker and rebuild the journey.
       if (!deps.offline) for (const inv of list.items ?? []) if (!deps.sales.byInvoice(inv.id)) { const rebuilt = saleFromInvoice(inv, deps.buyers); if (rebuilt) deps.sales.adopt(rebuilt); }
-      disputes = (await deps.reads.listDisputes(paypal, { page_size: 50 })).items ?? [];
+      const known = await knownDisputes(discoveryDeps(deps), paypal);
+      disputes = known.items;
+      if (known.listError !== undefined) warnings.push(readWarning(known.listError, "PayPal's dispute list"));
     } catch (err) {
-      warnings.push(err instanceof Error && "debugId" in err ? `PayPal could not be read (debug_id ${(err as { debugId?: string }).debugId ?? "-"}); showing what this app knows.` : "PayPal could not be read; showing what this app knows.");
+      warnings.push(readWarning(err, "PayPal"));
     }
   }
   const sales = deps.sales.visibleTo(ctx.session, Boolean(deps.offline)).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
