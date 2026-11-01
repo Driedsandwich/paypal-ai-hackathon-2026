@@ -3,7 +3,7 @@ import type { AiMessage, AiProvider, AiToolSpec } from "../ai/provider.js";
 import { carrierFor } from "../paypal/carriers.js";
 import { allowedActionList, disputeActions, type DisputeAction } from "../paypal/dispute-actions.js";
 import type { PayPalApi } from "../paypal/offline.js";
-import type { TrackingCheck, TrackingTarget } from "../journeys/created-here.js";
+import { invoiceTrackingProposal, type TrackingCheck, type TrackingTarget } from "../journeys/created-here.js";
 import { HttpError } from "../http/util.js";
 import type { Invoice } from "../paypal/types.js";
 import type { DemoBuyers } from "../demo/buyers.js";
@@ -204,15 +204,9 @@ export function agentTools(deps: ToolDeps): AiToolSpec[] {
             }
           }
           if (!check.transactionId) return { error: "Give the invoice id of a paid invoice created in this app." };
-          return offer(() =>
-            proposals.propose(
-              "add_invoice_tracking",
-              `Add ${i.carrier} tracking ${i.tracking_number} to transaction ${check.transactionId}`,
-              { trackers: [{ transaction_id: check.transactionId!, tracking_number: i.tracking_number, status: "SHIPPED", ...carrierFor(i.carrier, "shipping"), notify_buyer: true }] },
-              undefined,
-              check.saleId,
-            ),
-          );
+          // Orders v2 tracking when PayPal names the order behind the invoice payment, else trackers-batch.
+          const t = invoiceTrackingProposal(check, i.carrier, i.tracking_number, true);
+          return offer(() => proposals.propose(t.kind, `Add ${i.carrier} tracking ${i.tracking_number} to transaction ${check.transactionId}`, t.payload, undefined, check.saleId));
         }
         return { error: "Give invoice_id (invoice payment) or order_id and capture_id (payment link)." };
       },

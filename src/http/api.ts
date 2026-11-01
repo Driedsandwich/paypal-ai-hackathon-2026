@@ -28,7 +28,7 @@ import { disputeDetail, disputeRow, invoiceDetail, invoiceRow, orderView, public
 import { queueCapture } from "./paypal-return.js";
 import { ensureSession, isSecureRequest } from "./session.js";
 import { HttpError, isInvalidInputError, ok, readJsonBody } from "./util.js";
-import { checkTrackingTarget } from "../journeys/created-here.js";
+import { checkTrackingTarget, invoiceTrackingProposal } from "../journeys/created-here.js";
 import { buildJourney, journeyCounts, saleFromInvoice } from "../journeys/journeys.js";
 import type { OfflineWorlds } from "../journeys/offline-world.js";
 import { recordExecution } from "../journeys/record.js";
@@ -510,14 +510,9 @@ const ROUTES: Route[] = [
       }
       const check = await checkTrackingTarget(deps, paypal, { kind: "invoice", ...(body.invoice_id ? { invoice_id: body.invoice_id } : {}), ...(body.transaction_id ? { transaction_id: body.transaction_id } : {}) });
       const transactionId = check.transactionId!;
-      const proposal = propose(
-        ctx,
-        "add_invoice_tracking",
-        `Add ${body.carrier} tracking ${body.tracking_number} to ${check.saleId ?? `transaction ${transactionId}`}`,
-        { trackers: [{ transaction_id: transactionId, tracking_number: body.tracking_number, status: "SHIPPED", ...carrierFor(body.carrier, "shipping"), notify_buyer: body.notify_buyer }] },
-        undefined,
-        check.saleId,
-      );
+      // Orders v2 tracking when PayPal names the order behind the invoice payment, else trackers-batch.
+      const t = invoiceTrackingProposal(check, body.carrier, body.tracking_number, body.notify_buyer);
+      const proposal = propose(ctx, t.kind, `Add ${body.carrier} tracking ${body.tracking_number} to ${check.saleId ?? `transaction ${transactionId}`}`, t.payload, undefined, check.saleId);
       deps.sales.note(check.saleId ? deps.sales.get(check.saleId) : undefined, "Tracking number entered, awaiting your approval");
       ok(res, { proposal: publicProposal(ctx, proposal) }, 201);
     },

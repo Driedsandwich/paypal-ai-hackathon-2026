@@ -193,6 +193,17 @@ export interface OrderResponse {
 }
 
 /** Body of POST /v2/checkout/orders/{id}/track (`order_tracker_request`). */
+/**
+ * GET /v2/payments/captures/{id} (fields the app reads). An invoice paid through PayPal is a
+ * capture of an Orders v2 order: `supplementary_data.related_ids.order_id` names that order.
+ */
+export interface CaptureDetail {
+  id?: string;
+  status?: string;
+  invoice_id?: string;
+  supplementary_data?: { related_ids?: { order_id?: string } };
+}
+
 export interface OrderTrackerRequest {
   capture_id: string;
   tracking_number: string;

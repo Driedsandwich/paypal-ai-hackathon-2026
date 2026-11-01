@@ -514,3 +514,10 @@ approve, PayPal sent the invoice).
     same DTO as `GET /api/disputes/{id}`, with `sale_id`). A failing read adds
     `dispute_warning` and does not change the proposal. The case view replaces its detail with
     it (or reads again) and reloads the dispute list.
+77. **Invoice payments are tracked through Orders v2.** An invoice paid through PayPal is a
+    capture of an Orders v2 order (`supplementary_data.related_ids.order_id` on
+    `GET /v2/payments/captures/{id}`). Orders v2 `/track` works with the app's normal scopes,
+    while Add Tracking v1 `trackers-batch` needs a shipping trackers scope that the sandbox app
+    cannot enable (no such feature in the dashboard, 2026-11-01). So the invoice tracking
+    proposal targets that order when PayPal names it, and keeps `trackers-batch` only as the
+    fallback. The journey treats both kinds as the tracking step (`record.ts`).

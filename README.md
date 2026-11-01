@@ -23,8 +23,9 @@ PayPal until the seller clicks Approve**, and the server enforces that.
   proposal → seller approves → PayPal sends the invoice → buyer pays (webhook) → seller adds
   tracking (approved) → if a dispute opens, AI evidence pack + reply (approved).
 - **PayPal APIs used:** Invoicing v2 (create draft, send, remind, list, get, next number),
-  Orders v2 (payment links as a fallback, capture, `/track`), Add Tracking v1
-  (`trackers-batch`, for invoice payments), Customer Disputes v1 (list, get, provide evidence,
+  Orders v2 (payment links as a fallback, capture, `/track`, also for invoice payments),
+  Payments v2 (read a capture), Add Tracking v1 (`trackers-batch`, fallback for invoice
+  payments), Customer Disputes v1 (list, get, provide evidence,
   send message, accept claim), Webhooks (signature verification).
 - **AI part:** see [How AI is used](#how-ai-is-used).
 
@@ -125,10 +126,12 @@ cp .env.example .env   # then fill in the values (see below)
 PayPal sandbox preparation:
 
 1. In the PayPal developer dashboard, create a sandbox REST app and copy its client ID and
-   secret into `PAYPAL_CLIENT_ID` / `PAYPAL_CLIENT_SECRET`. Tracking for invoice payments
-   (`POST /v1/shipping/trackers-batch`) needs the app's shipping trackers permission (scope
-   `https://uri.paypal.com/services/shipping/trackers/readwrite`); without it PayPal answers 403
-   and the tracking proposal says so.
+   secret into `PAYPAL_CLIENT_ID` / `PAYPAL_CLIENT_SECRET`. Tracking for an invoice payment
+   goes through Orders v2 `/track` on the order PayPal names for that payment (read from the
+   capture); only when PayPal names no order does the app fall back to
+   `POST /v1/shipping/trackers-batch`, which needs the app's shipping trackers permission (scope
+   `https://uri.paypal.com/services/shipping/trackers/readwrite`; without it PayPal answers 403
+   and the tracking proposal says so).
 2. Note the sandbox **personal** (buyer) account emails and put them in `DEMO_BUYER_EMAILS`.
    Invoices and payment links can only be sent to these accounts (shown as *Demo buyer 1, 2, …*).
 3. Optional: add a webhook for `https://<your-host>/webhooks/paypal` with the events

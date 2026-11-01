@@ -458,3 +458,22 @@ dependencies added, no new env names, no credentials.
    into the repository so the fixture can be replaced by a recording.
 3. Should the evidence proposal send OTHER from the start for CHARGEBACK cases of reason
    MERCHANDISE_OR_SERVICE_NOT_RECEIVED, instead of trying PROOF_OF_FULFILLMENT first?
+
+## Pass 5b (local, 2026-11-01): tracking for invoice payments through Orders v2
+
+Answer to open question 1 of pass 5. The sandbox app's feature list in the developer dashboard
+has no tracking or shipping option, so the shipping trackers permission cannot be enabled
+there. Instead, a live check on the sandbox showed that an invoice payment is a capture of an
+Orders v2 order: `GET /v2/payments/captures/{id}` returned
+`supplementary_data.related_ids.order_id`, and `POST /v2/checkout/orders/{order}/track` with
+that capture id, carrier `JPN_JAPAN_POST` and a tracking number answered 201 with the tracker
+`SHIPPED` (the same app had answered 403 on `trackers-batch`).
+
+- `PayPalClient.getCapture` (Payments v2, read only).
+- `checkTrackingTarget` also returns `orderId` for invoice payments when the capture names one
+  (`orderOfCapture`; a failed read or a PayPal stand-in without `getCapture`, such as the
+  offline demo, gives none).
+- `invoiceTrackingProposal` builds the tracking proposal for both the tracking route and the
+  chat tool: `add_order_tracking` on that order when PayPal names it, otherwise
+  `add_invoice_tracking` (`trackers-batch`, with the pass 5 message for 403).
+- Tests: `test/invoice-tracking-orders.test.ts` (5). README: APIs used and the Setup sentence.

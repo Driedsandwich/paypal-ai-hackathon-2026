@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { baseUrlFor, type PayPalConfig } from "./config.js";
 import type {
+  CaptureDetail,
   CreatedInvoice,
   CreateOrderRequest,
   Dispute,
@@ -238,6 +239,11 @@ export class PayPalClient {
   /** GET /v2/checkout/orders/{id} */
   async getOrder(orderId: string): Promise<OrderResponse> {
     return this.request<OrderResponse>("GET", `/v2/checkout/orders/${seg(orderId, "orderId")}`);
+  }
+
+  /** GET /v2/payments/captures/{id}: a payment; for invoice payments it names the Orders v2 order. */
+  async getCapture(captureId: string): Promise<CaptureDetail> {
+    return this.request<CaptureDetail>("GET", `/v2/payments/captures/${seg(captureId, "captureId")}`);
   }
 
   /** POST /v2/checkout/orders/{id}/capture */
