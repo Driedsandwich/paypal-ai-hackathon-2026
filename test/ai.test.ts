@@ -10,13 +10,28 @@ async function summarize(ai: AiProvider, text: string): Promise<string> {
 }
 
 describe("AI provider seam", () => {
-  it("fake provider returns scripted replies in order and records calls", async () => {
-    const ai = new FakeAiProvider(["first", "second"]);
+  it("fake provider returns scripted replies in order and records calls when asked to", async () => {
+    const ai = new FakeAiProvider(["first", "second"], { record: true });
     expect(await summarize(ai, "a")).toBe("first");
     expect(await summarize(ai, "b")).toBe("second");
     expect(await summarize(ai, "c")).toBe("second");
     expect(ai.calls).toHaveLength(3);
     expect(ai.calls[0]!.messages[1]).toEqual({ role: "user", content: "a" });
+  });
+
+  it("fake provider records nothing by default and keeps a bounded buffer when recording", async () => {
+    const quiet = new FakeAiProvider(["ok"]);
+    for (let i = 0; i < 5; i++) await summarize(quiet, "x".repeat(10_000));
+    expect(quiet.calls).toHaveLength(0);
+    expect((createAiProviderFromEnv({}) as FakeAiProvider).calls).toHaveLength(0);
+
+    const bounded = new FakeAiProvider(["ok"], { record: 3 });
+    for (const t of ["a", "b", "c", "d", "e"]) await summarize(bounded, t);
+    expect(bounded.calls.map((c) => c.messages[1]!.content)).toEqual(["c", "d", "e"]);
+
+    const defaultMax = new FakeAiProvider(["ok"], { record: true });
+    for (let i = 0; i < 60; i++) await summarize(defaultMax, String(i));
+    expect(defaultMax.calls).toHaveLength(50);
   });
 
   it("fake provider can compute replies from the request", async () => {

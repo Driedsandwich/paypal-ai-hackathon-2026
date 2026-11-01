@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createAiProviderFromEnv, FakeAiProvider } from "../src/ai/index.js";
+import { offlineReply } from "../src/ai/offline.js";
 import { unsupportedFacts } from "../src/agent/fact-check.js";
 import { AgentOutputError, extractJson } from "../src/agent/json-task.js";
 import { EvidenceInputSchema, JpItemSchema } from "../src/agent/schemas.js";
@@ -11,6 +12,8 @@ import { paypalWith } from "./helpers/paypal.js";
 
 const CONFIG: AgentConfig = { fxJpyPerUsd: 150, maxOutputTokens: 800, sellerBusinessName: "Okuri Demo Shop", publicBaseUrl: "http://localhost:3000/" };
 const offline = () => createAiProviderFromEnv({ AI_PROVIDER: "fake" });
+/** Offline provider that records requests (test-only option). */
+const recordingOffline = () => new FakeAiProvider([offlineReply], { record: true });
 
 const TEA_BOWL = JpItemSchema.parse({
   title_ja: "手作り 抹茶碗 陶器",
@@ -40,13 +43,13 @@ describe("draftListing", () => {
 
   it("retries once with the validation issues, then gives up with AgentOutputError", async () => {
     const good = JSON.stringify({ title: "Japanese Tea Bowl", description: "A handmade tea bowl from Japan.", item_specifics: [], customs_description: "ceramic tea bowl", hs_code_candidate: "6912.00" });
-    const ai = new FakeAiProvider(["Sure! here you go: {not json", "```json\n" + good + "\n```"]);
+    const ai = new FakeAiProvider(["Sure! here you go: {not json", "```json\n" + good + "\n```"], { record: true });
     const listing = await new Agent(ai, CONFIG).draftListing(TEA_BOWL);
     expect(listing.title).toBe("Japanese Tea Bowl");
     expect(ai.calls).toHaveLength(2);
     expect(ai.calls[1]!.messages.at(-1)!.content).toMatch(/did not match the schema/);
 
-    const bad = new FakeAiProvider([JSON.stringify({ title: "x" })]);
+    const bad = new FakeAiProvider([JSON.stringify({ title: "x" })], { record: true });
     const err = await new Agent(bad, CONFIG).draftListing(TEA_BOWL).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(AgentOutputError);
     expect((err as AgentOutputError).issues.join(" ")).toMatch(/title/);
@@ -54,7 +57,7 @@ describe("draftListing", () => {
   });
 
   it("sends the item to the model and caps output tokens", async () => {
-    const ai = offline() as FakeAiProvider;
+    const ai = recordingOffline();
     await new Agent(ai, CONFIG).draftListing(TEA_BOWL);
     expect(ai.calls[0]!.maxTokens).toBe(800);
     expect(ai.calls[0]!.messages[1]!.content).toContain("抹茶碗");
@@ -109,7 +112,7 @@ describe("nudgeUnpaid", () => {
   });
 
   it("does not call the model when nothing is unpaid", async () => {
-    const ai = offline() as FakeAiProvider;
+    const ai = recordingOffline();
     expect((await new Agent(ai, CONFIG).nudgeUnpaid([])).reminders).toEqual([]);
     expect(ai.calls).toHaveLength(0);
   });
