@@ -160,9 +160,20 @@ export const EvidencePackAiSchema = z.object({
   timeline: z
     .array(z.object({ date: z.string().max(40), event: z.string().min(3).max(300), source: z.enum(["dispute", "invoice", "tracking", "messages", "seller_notes"]) }))
     .max(30),
-  reply_draft: z.string().min(10).max(2000),
-  evidence_notes: z.string().min(10).max(2000),
+  reply_draft: z
+    .string()
+    .min(10)
+    .max(2000)
+    .describe("Final English message to the buyer, sent as is: no placeholders, no square brackets, no instructions to the seller, no mention of attachments"),
+  evidence_notes: z
+    .string()
+    .min(10)
+    .max(2000)
+    .describe("Final notes for PayPal, sent as is: no placeholders, no square brackets, no instructions to the seller; say something is attached only if it is listed in the input's attachments"),
   recommended_action: z.enum(EVIDENCE_ACTIONS),
-  missing_information: z.array(z.string().max(300)).max(10),
+  missing_information: z
+    .array(z.string().max(300))
+    .max(10)
+    .describe("What the seller still has to do or provide (files to attach, facts to check). Seller to-dos go here, never in reply_draft or evidence_notes"),
 });
 export type EvidencePackAi = z.infer<typeof EvidencePackAiSchema>;

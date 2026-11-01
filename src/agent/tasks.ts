@@ -12,7 +12,8 @@ import type {
   SendReminderPayload,
 } from "../proposals/actions.js";
 import { unsupportedFacts } from "./fact-check.js";
-import { runJsonTask } from "./json-task.js";
+import { AgentOutputError, runJsonTask } from "./json-task.js";
+import { repairSendableText } from "./sendable-text.js";
 import {
   BuyerMessageAiSchema,
   EvidencePackAiSchema,
@@ -103,6 +104,9 @@ If something important is missing, list it in missing_information and set recomm
 - timeline: dated events, each citing its source field.
 - reply_draft: a calm, polite English message to the buyer (max 2000 characters).
 - evidence_notes: notes for PayPal explaining the evidence (max 2000 characters).
+- reply_draft and evidence_notes are sent exactly as you write them. Write final text only: no placeholders, no square brackets, no notes or instructions to the seller (never "[Seller: ...]" or "(Seller: ...)").
+  Anything the seller still has to do or find (attach a receipt, add a screenshot, check a date) goes in missing_information, never in reply_draft or evidence_notes.
+- Only the files listed in attachments are attached. Never write that something is attached or enclosed unless it is in that list; if attachments is empty, do not mention attachments at all.
 - recommended_action: provide_evidence when shipment proof exists for an item-not-received case; send_message when the case is still an inquiry; accept_claim only if the seller notes say they want to refund.
   Only recommend an action listed in dispute.allowed_actions (what PayPal currently allows); otherwise use needs_seller_input.
   If dispute.allowed_actions is empty, PayPal offers the seller no action right now: use wait_for_paypal (the reply draft is still useful for later).`;
@@ -189,13 +193,26 @@ export class Agent {
 
   /** Task 4: evidence summary, timeline, attachments and an English reply draft. */
   async disputeEvidencePack(input: EvidenceInput): Promise<EvidencePack> {
+    // The attachments are known before the model answers, so it is told exactly what is attached.
+    const { attachments, described } = evidenceAttachments(input);
     const { value, provider, model, fallbackFrom } = await runJsonTask(this.ai, {
       task: "disputeEvidencePack",
       system: EVIDENCE_SYSTEM,
-      input,
+      input: { ...input, attachments: described.map((a) => ({ name: a.name, description: a.description })) },
       schema: EvidencePackAiSchema,
       maxTokens: this.config.maxOutputTokens,
     });
+
+    // Texts sent as they are: seller to-dos and false attachment claims are removed and listed
+    // in missing_information instead (pass 5). Too little left to send means the answer is refused.
+    for (const field of ["evidence_notes", "reply_draft"] as const) {
+      const fixed = repairSendableText(value[field], described);
+      if (fixed.text.length < 10) {
+        throw new AgentOutputError("The AI answer for disputeEvidencePack had no sendable text left after removing seller instructions", [`${field}: only instructions or placeholders`]);
+      }
+      value[field] = fixed.text.slice(0, 2000);
+      for (const r of fixed.removed) if (value.missing_information.length < 10) value.missing_information.push(r.slice(0, 300));
+    }
 
     // The recommendation never names an action PayPal does not offer now (checked in code too).
     // With no seller action at all it is "wait for PayPal"; missing_information still lists gaps.
@@ -212,26 +229,6 @@ export class Agent {
         ...value.timeline.flatMap((t) => unsupportedFacts(`${t.date} ${t.event}`, input)),
       ]),
     ];
-
-    const attachments: EvidenceAttachment[] = [];
-    const described: EvidencePack["attachments"] = [];
-    if (input.invoice) {
-      const inv = input.invoice;
-      const pdf = renderTextPdf(`Invoice ${inv.invoice_number ?? inv.invoice_id} (summary)`, [
-        `Invoice id: ${inv.invoice_id}`,
-        ...(inv.invoice_date ? [`Invoice date: ${inv.invoice_date}`] : []),
-        ...(inv.status ? [`Status: ${inv.status}`] : []),
-        ...(inv.amount ? [`Amount: ${inv.amount.value} ${inv.amount.currency_code}`] : []),
-        ...(inv.paid_date ? [`Paid: ${inv.paid_date}`] : []),
-        "",
-        "Items:",
-        ...inv.items.map((i) => `- ${i.name} x ${i.quantity ?? "1"}${i.unit_amount ? ` @ ${i.unit_amount.value} ${i.unit_amount.currency_code}` : ""}`),
-        ...(input.tracking ? ["", `Shipped with ${input.tracking.carrier}, tracking ${input.tracking.tracking_number}${input.tracking.shipped_date ? ` on ${input.tracking.shipped_date}` : ""}`] : []),
-      ]);
-      const name = `invoice-${(inv.invoice_number ?? inv.invoice_id).replace(/[^A-Za-z0-9-]/g, "")}.pdf`;
-      attachments.push({ name, contentType: "application/pdf", base64: Buffer.from(pdf).toString("base64") });
-      described.push({ name, contentType: "application/pdf", description: "Invoice summary generated from PayPal invoice data" });
-    }
 
     const evidence: DisputeEvidence = input.tracking
       ? {
@@ -359,4 +356,35 @@ export function buildOrderPayload(
 function disputeCarrier(name: string): { carrier_name: string; carrier_name_other?: string } {
   const c = carrierFor(name, "disputes");
   return { carrier_name: c.carrier, ...(c.carrier_name_other ? { carrier_name_other: c.carrier_name_other } : {}) };
+}
+
+/**
+ * The files attached to an evidence submission: an invoice summary PDF when the invoice is
+ * known (with the shipment line when tracking is given). Computed before the model call.
+ */
+function evidenceAttachments(input: EvidenceInput): { attachments: EvidenceAttachment[]; described: EvidencePack["attachments"] } {
+  const attachments: EvidenceAttachment[] = [];
+  const described: EvidencePack["attachments"] = [];
+  if (input.invoice) {
+    const inv = input.invoice;
+    const pdf = renderTextPdf(`Invoice ${inv.invoice_number ?? inv.invoice_id} (summary)`, [
+      `Invoice id: ${inv.invoice_id}`,
+      ...(inv.invoice_date ? [`Invoice date: ${inv.invoice_date}`] : []),
+      ...(inv.status ? [`Status: ${inv.status}`] : []),
+      ...(inv.amount ? [`Amount: ${inv.amount.value} ${inv.amount.currency_code}`] : []),
+      ...(inv.paid_date ? [`Paid: ${inv.paid_date}`] : []),
+      "",
+      "Items:",
+      ...inv.items.map((i) => `- ${i.name} x ${i.quantity ?? "1"}${i.unit_amount ? ` @ ${i.unit_amount.value} ${i.unit_amount.currency_code}` : ""}`),
+      ...(input.tracking ? ["", `Shipped with ${input.tracking.carrier}, tracking ${input.tracking.tracking_number}${input.tracking.shipped_date ? ` on ${input.tracking.shipped_date}` : ""}`] : []),
+    ]);
+    const name = `invoice-${(inv.invoice_number ?? inv.invoice_id).replace(/[^A-Za-z0-9-]/g, "")}.pdf`;
+    attachments.push({ name, contentType: "application/pdf", base64: Buffer.from(pdf).toString("base64") });
+    described.push({
+      name,
+      contentType: "application/pdf",
+      description: input.tracking ? "Invoice summary generated from PayPal invoice data, with the carrier and tracking number" : "Invoice summary generated from PayPal invoice data",
+    });
+  }
+  return { attachments, described };
 }
