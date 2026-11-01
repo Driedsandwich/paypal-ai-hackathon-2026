@@ -1,4 +1,4 @@
-# Okuri: an AI export desk for small Japanese sellers (working title)
+# Okuri: an AI export desk for small Japanese sellers
 
 Entry for the PayPal AI Hackathon 2026 (Devpost). Built on the **PayPal REST APIs (sandbox)**
 and an **AI agent** (Anthropic Claude by default; Google Gemini or OpenAI optional).
@@ -40,9 +40,11 @@ PayPal until the seller clicks Approve**, and the server enforces that.
   page load then takes **about one minute** (a blank page or Render's loading screen); after
   that the app answers normally. Waking up also clears the in-memory state (your proposals
   and the activity log); invoices the app created are recognised again from PayPal.
-- **Sandbox buyer for paying invoices:** the login of the sandbox *personal* account is in the
-  Devpost submission's testing instructions (it is not in this public repository). Invoices
-  from the hosted demo can only go to the configured demo buyers, shown as *Demo buyer 1, 2…*.
+- **No buyer login needed to try it:** the shared sandbox account already has paid sales from
+  our own test (for example *OK-8789*, a tea bowl paid on 2026-11-01) and a sample dispute case
+  (step 6 below). The sandbox buyer's login is not published. To pay invoices yourself, run
+  the app with your own sandbox app and buyer (see [Run](#run)). Invoices from the hosted demo
+  can only go to the configured demo buyers, shown as *Demo buyer 1, 2…*.
 - No login: each browser gets its own demo session. Proposals you create are visible only in
   your browser; invoices on the shared sandbox account are visible to every visitor.
 
@@ -60,25 +62,29 @@ PayPal until the seller clicks Approve**, and the server enforces that.
    step 2 with a callout: the invoice total and **Approve**. *Review* opens the **Approvals**
    inbox, which lists every proposal across sales with the exact PayPal payload. Click
    **Approve**: the app creates the invoice with the Invoicing v2 API and PayPal emails it.
-4. **Pay** the invoice as the sandbox buyer (link in PayPal's email, or log in to the sandbox
-   with the buyer account from the testing instructions). Back in Okuri, the journey moves to
+4. **Paid:** paying needs the sandbox buyer's login, which is not published. Use *Previous /
+   Next* to open a sale our sandbox buyer already paid (for example *OK-8789*): the journey
+   shows *Paid* and the next step, *Tracking*. With your own sandbox app and buyer (see
+   [Run](#run)) you can pay the invoice yourself from PayPal's email; the journey then moves to
    *Paid* (the list is cached for up to 30 seconds; reload the page).
-5. **Tracking:** at step 4 enter a carrier (`Japan Post`) and a tracking number, click *Add
-   tracking*, then **Approve**. The app registers the tracking with PayPal for this payment.
+5. **Tracking:** on a paid sale (for example *OK-8789*), at step 4 enter a carrier
+   (`Japan Post`) and a tracking number, click *Add tracking*, then **Approve**. The app registers the tracking with PayPal for this payment.
    Tracking can only be added to invoices and payment links this demo created.
-6. **Dispute (optional):** as the sandbox buyer, open an *item not received* case for the
-   paid invoice in PayPal's Resolution Center and copy its **case ID** (it looks like
-   `PP-R-ABC-12345678`). In Okuri open **Disputes**, paste the ID into the box at the top and
-   click *Open a case by ID*. The case opens at once, and the sale's journey shows a dashed
-   branch to **Evidence + reply**. New sandbox cases can take a while (more than 3 minutes in
-   our test) to appear in PayPal's dispute list, so without the ID they show up only later
-   (sooner when the dispute webhook is set up, see Setup). *Build evidence pack with AI*: the AI writes a
-   summary, a timeline and an English reply, attaches a PDF invoice summary, and flags in red
-   any date, amount or tracking number it cannot back up with PayPal's data. Only actions
-   PayPal currently allows become proposals. In our sandbox test the case moved on to PayPal's
-   review within minutes and PayPal offered the seller no action; in that state the app says
-   *"PayPal is reviewing this case. No seller action is available right now."* and the pack
-   and the reply draft stay available to read and copy, with nothing to approve.
+6. **Dispute:** open **Disputes**, paste the sample case ID `PP-R-EMU-10195761` into the box
+   at the top and click *Open a case by ID*. Our sandbox buyer opened this *item not received*
+   case on 2026-11-01. The same day Okuri built the evidence pack, the seller approved it, and
+   Okuri submitted the evidence through the Disputes API; PayPal then moved the case to its own
+   review (it may be closed by the time you read this). PayPal now offers the seller no action,
+   so the app says so and shows the case read-only: *Build evidence pack with AI* still writes a
+   summary, a timeline, an English reply and the evidence notes, and flags in red any date,
+   amount or tracking number it cannot back up with PayPal's data, but there is nothing to
+   approve. Only actions PayPal currently allows ever become proposals. For a case of your own
+   (your own sandbox app and buyer), open an *item not received* case in PayPal's Resolution
+   Center and paste its **case ID** (it looks like `PP-R-ABC-12345678`): new sandbox cases can
+   take a while (more than 3 minutes in our test) to appear in PayPal's dispute list, and *Open
+   a case by ID* reads them at once (sooner when the dispute webhook is set up, see Setup). A
+   case about a sale the demo created also shows a dashed branch to **Evidence + reply** on
+   that sale's journey.
 7. **Insights:** revenue by buyer country, unpaid invoices and the dispute rate, built with
    AG Studio from the same sales.
 8. *Ask Okuri* (footer link): free chat with the agent in Japanese or English; anything it
@@ -101,6 +107,7 @@ repository was created during that period. Dated log of the work (newest last):
 | 2026-11-01 | Pass 2: visual design (S3 "transaction journey" structure with the A1 "paper & seal" look; layout table in `docs/design/LAYOUT_TABLE.md`); journeys API and sale registry; Approvals inbox; offline PayPal simulator (`PAYPAL_OFFLINE_DEMO`); tracking only for sales this demo created; AI fallback provider; Insights with AG Studio; Render Blueprint (`render.yaml`); screenshots in `docs/media/`. |
 | 2026-11-01 | Pass 3a: dispute discovery. Cases are found from PayPal's list, verified dispute webhooks and *Open a case by ID* (a bounded in-memory registry), linked to their sale by the disputed transaction (invoice payment or order capture), with a clear state when PayPal offers the seller no action; tests use a recorded sandbox dispute shape. |
 | 2026-11-01 | Pass 4 (after the first Render deploy): a missing AI key no longer stops startup (offline AI + banner, or no fallback); accept-claim only when PayPal offers its link; optional shipping on invoices ("Item + Shipping"); Insights' by-country Disputes column visible; README with the hosted URL and "AI tools used". |
+| 2026-11-01 | Hosted demo on Render checked end to end against the real sandbox: invoices created, sent and paid in USD from a Japan-based sandbox merchant; a buyer dispute opened by its case ID and the seller's evidence submitted through the Disputes API after approval; demo video recorded from the hosted demo; README for judges. |
 
 ## Setup
 
@@ -163,12 +170,11 @@ Chromium, not a project dependency) writes them to `docs/media/`.
 (`NODE_VERSION`), `TRUST_PROXY_HOPS=1`. In the Render dashboard choose *New → Blueprint*, pick
 this repository, and fill in the values marked `sync: false` (PayPal client id and secret,
 webhook id, AI keys, AG Studio licence, demo buyer emails, `PUBLIC_BASE_URL` = the service
-URL, seller name). `AI_API_KEY` must be set before the first deploy while `AI_PROVIDER` is
-`anthropic` (the server refuses to start without it, and the health check never turns green);
-set `AI_PROVIDER` empty to start with the offline AI instead. Set `PAYPAL_OFFLINE_DEMO=true` to run the hosted demo without PayPal
-credentials. The Blueprint fields follow Render's Blueprint specification as I know it; the
-Render docs could not be opened from the build environment, so check them when you first
-deploy.
+URL, seller name). Without `AI_API_KEY` the server still starts, with the offline AI and a
+banner that says so. Set `PAYPAL_OFFLINE_DEMO=true` to run the hosted demo without PayPal
+credentials. The hosted demo at <https://okuri.onrender.com> was deployed from this Blueprint
+on 2026-11-01 (Render's form rejects a pasted value whose name `render.yaml` already sets,
+such as `PAYPAL_ENV` or `AI_PROVIDER`: leave those out when you paste an `.env`).
 
 UI development with hot reload: run the server as above, then `npm run dev:web` (Vite on its
 own port, proxying `/api` to port 3000).
@@ -180,8 +186,8 @@ cannot create invoices in USD (this can depend on the account's country), set
 `PAYMENT_PATH=order`: the same flow then creates Orders v2 payment links (`payer-action`
 link), the buyer is sent back to `/paypal/return`, and a capture proposal appears for the
 seller to approve. The header and `/api/health` always show the path in use. The hosted demo
-uses `PAYMENT_PATH=invoice` (`render.yaml`); this still has to be tested against the sandbox
-merchant account (see `docs/BUILD_LOG.md`).
+uses `PAYMENT_PATH=invoice` (`render.yaml`); on 2026-11-01 a Japan-based sandbox merchant
+created, sent and was paid for USD invoices this way.
 
 ### HTTP API
 
@@ -373,7 +379,8 @@ that PayPal's list does not return yet (known from a webhook or opened by ID) ar
 Screenshots of the offline demo at 1440×900 and 390×844 are in [`docs/media/`](docs/media/)
 (`journey-*`, `approvals-*`, `new-item-*`, `disputes-*`, `insights-*`,
 `journey-menu-open-mobile.png`). The design targets they were compared with are in
-[`docs/design/`](docs/design/). The demo video goes in `docs/media/` too.
+[`docs/design/`](docs/design/). The demo video (under three minutes, recorded from the hosted
+demo) is linked from the Devpost submission.
 
 ## Pre-existing components
 
@@ -404,15 +411,6 @@ during the submission period). Dependencies added in this build are pinned to ex
 | PayPal OpenAPI specifications (`paypal/paypal-rest-api-specifications`) | Reference only, not copied | Checked request/response field names |
 
 `@paypal/agent-toolkit` was evaluated but is **not** used (see `docs/DECISIONS.md`).
-
-## Before submitting
-
-- [ ] Fill in the work log and demo media.
-- [ ] `npm test` and `npm run prepublish-check` pass.
-- [ ] Repository is public and contains `LICENSE`.
-- [ ] Judges can run it from the Setup/Run steps with their own sandbox credentials.
-- [x] Hosted demo deployed from `render.yaml`; URL filled in under *Hosted demo*; payment path tested (invoice path, live check 2026-11-01).
-- [ ] Sandbox buyer login added to the Devpost testing instructions (not to this repository).
 
 ## License
 
