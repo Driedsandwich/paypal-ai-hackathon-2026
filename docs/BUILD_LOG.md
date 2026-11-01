@@ -477,3 +477,71 @@ that capture id, carrier `JPN_JAPAN_POST` and a tracking number answered 201 wit
   chat tool: `add_order_tracking` on that order when PayPal names it, otherwise
   `add_invoice_tracking` (`trackers-batch`, with the pass 5 message for 403).
 - Tests: `test/invoice-tracking-orders.test.ts` (5). README: APIs used and the Setup sentence.
+
+## Pass 6 (local, 2026-11-01): journeys rebuilt after a restart show what PayPal knows
+
+The hosted demo runs on Render's free plan, which sleeps after about 15 minutes, so judges
+usually open a freshly restarted instance whose in-memory sales are gone; journeys are then
+rebuilt from the invoice markers. Seen on 2026-11-01: a sale that showed its Japanese title
+before the restart showed "OK-8789 · Invoice 0008" afterwards, and a sale whose tracking was
+registered with PayPal went back to step 4. Branch `claude/build-v1`; no pull request, nothing
+merged, no dependencies added, no new env names, no credentials.
+
+### Result
+
+- `npm ci`, `npm run typecheck`, `npm test`, `npm run build`, `npm run prepublish-check` pass on
+  Node 22.23; the full test suite also passes on Node 20.20 (run with `npx node@20`).
+- **Tests: 275 before (27 files), 284 after (28 files).** New: `test/rebuild-after-restart.test.ts`
+  (9) with `test/fixtures/rebuild-after-restart-20261101.json`. No existing test changed.
+
+### What changed
+
+| Item | Change | Where |
+| --- | --- | --- |
+| 1 Titles | New invoices (New item flow, seed) get `detail.memo` = "Okuri item (Japanese title): …" (PayPal's spec: "A private bookkeeping memo for the user."); `detail.reference` (sale marker) unchanged. A rebuilt journey takes the English title from the first item's name and the Japanese title from the memo (only with the marker; other memos are ignored). The "Invoice 0008" symptom showed that PayPal's **list** entry had no `items`, so a rebuilt sale whose list entry lacks the item name or memo gets one `GET /v2/invoicing/invoices/{id}` (cached, once per sale). Old invoices without memo keep their English title. | `src/journeys/sales.ts`, `src/agent/tasks.ts`, `src/http/api.ts`, `src/journeys/journeys.ts`, `src/journeys/rebuild.ts` |
+| 2 Tracking | For rebuilt sales of paid invoices without tracking: `GET /v2/payments/captures/{payment id}` → `supplementary_data.related_ids.order_id` → `GET /v2/checkout/orders/{id}`; the newest tracker in `purchase_units[].shipping.trackers` that is not CANCELLED marks the tracking step done; activity "Tracking EJ… found in PayPal after a restart". Bounds: only sales rebuilt from this demo's invoices, at most 4 PayPal reads per journeys read, all through the shared read cache (`getInvoice`, `getCapture`, `getOrder` added), and a sale that was checked waits 10 minutes before the next try. A failed read leaves the journey as it is (no warning). The offline demo does not run this. | `src/journeys/rebuild.ts`, `src/paypal/read-cache.ts`, `src/paypal/types.ts`, `src/http/api.ts` |
+| Carrier | The step label is "Tracking EJ…" when the carrier is unknown; `tracking.carrier` became optional (server and web types). The Disputes form then keeps its own carrier default. | `src/journeys/journeys.ts`, `web/src/api.ts` |
+
+### How I checked things
+
+- PayPal's OpenAPI specs (`paypal/paypal-rest-api-specifications`, `invoicing_v2.json` and
+  `checkout_orders_v2.json`, read 2026-11-01): `detail.memo` is "A private bookkeeping memo for
+  the user." (max 500); the list call's `fields` parameter defaults to `all`; an order's
+  `shipping.trackers[]` item (`tracker`) has `id`, `status`, `items`, `links` and timestamps,
+  **no tracking number and no carrier**.
+- Tests with a fake PayPal: memo written next to the unchanged marker (builder and the prepare
+  route), both titles from a memo invoice, an old invoice without memo, a memo without marker
+  ignored; the hosted case (trimmed list entry → invoice → capture → order with one tracker)
+  ending at step 5 with exactly three reads and none on the next load; an order without
+  trackers; a failed invoice, capture or order read (500) leaving the journey and not retried at
+  once; five rebuilt paid sales staying within 4 reads per load; the offline demo making no
+  PayPal call. Cancelled trackers and trackers of another capture are ignored.
+- Not clicked through in a browser this pass (the only UI change is the type and the label).
+
+### Not done, or only partly, and why
+
+- **The carrier is not shown after a restart.** Orders v2 does not return it on the order
+  (spec), and the tracker's own read (`GET /v1/shipping/trackers/{id}`, the tracker's `self`
+  link) belongs to Add Tracking v1, which the sandbox app may not call (403 in pass 5). The
+  number comes from the tracker id ("<capture id>-<tracking number>"); if PayPal ever adds
+  `tracking_number` or `carrier` to the tracker, they are used.
+- **The fixture is spec-shaped, not recorded.** The list entry without items follows the
+  hosted symptom; the order with a tracker follows the spec and the id format of PayPal's
+  examples. Whether the sandbox list entry includes `detail.memo` was not checked (the
+  invoice is read once per rebuilt sale anyway when it does not).
+- Tracking registered through `trackers-batch` (the fallback when PayPal names no order) is not
+  read back: there is no order to read, and Add Tracking v1 reads need the missing scope.
+- Payment-link (order) sales are not rebuilt after a restart (unchanged; not in scope).
+- Invoices created before this pass have no memo, so their Japanese title stays unknown after
+  a restart; the chat tool's invoices have none either (it has no Japanese title).
+- Up to 4 extra reads per page load until every rebuilt sale is complete or checked; with many
+  rebuilt sales the rest fill in on the next loads.
+
+### Open questions for you
+
+1. On the hosted demo, please create a new sale through New item, add tracking, wait for the
+   instance to sleep (or redeploy), and check that the journey shows both titles and
+   "Tracking …". If it does not, please record the raw `GET /v2/checkout/orders/{id}` body
+   (with the tracker) so the fixture can be replaced by a recording.
+2. Is "Tracking EJ…" (without the carrier) acceptable after a restart, or should the app keep
+   the carrier somewhere PayPal returns (for example in the invoice memo, after the title)?

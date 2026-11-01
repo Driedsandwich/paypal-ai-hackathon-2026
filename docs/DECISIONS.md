@@ -522,3 +522,35 @@ approve, PayPal sent the invoice).
     cannot enable (no such feature in the dashboard, 2026-11-01). So the invoice tracking
     proposal targets that order when PayPal names it, and keeps `trackers-batch` only as the
     fallback. The journey treats both kinds as the tracking step (`record.ts`).
+
+## Pass 6 (2026-11-01): journeys rebuilt after a restart
+
+78. **Japanese title in the invoice memo.** `buildInvoicePayload` takes the sale's Japanese
+    title and writes `detail.memo` = "Okuri item (Japanese title): <title, max 200>". PayPal's
+    Invoicing v2 spec describes `memo` as "A private bookkeeping memo for the user." (max 500),
+    unlike `note` ("A note to the invoice recipient"); that is the basis for using it, nothing
+    more was verified. `detail.reference` keeps the sale marker unchanged. The memo is read
+    only on invoices that carry the marker and only with the fixed prefix, so a memo of another
+    merchant on the shared sandbox never becomes a title. Used by the New item / prepare route
+    and the seed; the chat tool and the offline world have no Japanese title to store.
+79. **Titles of a rebuilt journey.** English from `items[0].name`, Japanese from the memo;
+    otherwise the earlier "Invoice <number>" fallback. Because the hosted list entry carried no
+    items (the 2026-11-01 symptom), a rebuilt sale whose list entry lacks the item name or the
+    memo gets one `GET /v2/invoicing/invoices/{id}`; after a successful read it is not read
+    again for titles (`rebuilt.detailRead`). The read also fills the payment's transaction id.
+80. **Tracking read back from Orders v2.** For rebuilt sales (`owner` "", marker) of paid
+    invoices without tracking: capture → `supplementary_data.related_ids.order_id` → order →
+    `purchase_units[].shipping.trackers[]`. The newest tracker that is not CANCELLED and whose
+    number is known gives `tracking`: the number from `tracking_number` when present, else from
+    the tracker id "<capture id>-<number>" (the id must start with this capture's id); the
+    carrier only when PayPal includes one (the spec's `tracker` has none). `tracking.at` is the
+    tracker's `create_time`. Activity: "Tracking <number> found in PayPal after a restart"
+    (with "(carrier)" when known). The label without carrier is "Tracking <number>".
+81. **Bounds of the rebuild reads.** Run inside the journeys read, never in the offline demo.
+    At most 4 PayPal reads per journeys read (`REBUILD_READS_PER_REQUEST`); capture and order
+    are started only when both fit. Every read goes through `PayPalReadCache` (same TTL as the
+    lists, `LIST_CACHE_SECONDS`; concurrent identical reads share one call). A sale that was
+    checked (nothing found, no order named, or a read failed) is skipped for 10 minutes
+    (`REBUILD_RECHECK_MS`); a sale with tracking is never checked again. Failed reads are
+    swallowed: the journey stays as it was and no warning is shown. Newest rebuilt sales go
+    first.
