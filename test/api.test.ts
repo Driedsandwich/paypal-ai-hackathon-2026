@@ -352,3 +352,62 @@ describe("money validation over HTTP", () => {
     expect(good.body.data.proposal.title).toMatch(/JPY 12000/);
   });
 });
+
+describe("public data (F3)", () => {
+  const SECRET_NOTE = "private memo";
+  /** A sandbox whose records carry contact details the public must not see. */
+  function leakySandbox() {
+    return sandbox((c) => {
+      const u = c.url.replace(SANDBOX, "");
+      const recipient = (email: string) => [{ billing_info: { email_address: email, business_name: "Buyer Co" } }];
+      const invoice = (id: string, email: string) => ({
+        id,
+        status: "SENT",
+        detail: { currency_code: "USD", invoice_number: id.slice(-4), memo: SECRET_NOTE, metadata: { recipient_view_url: `https://www.sandbox.paypal.com/invoice/p/#${id}` } },
+        invoicer: { email_address: fakeEmail("merchant"), business_name: "Shop" },
+        primary_recipients: recipient(email),
+        amount: { currency_code: "USD", value: "80.00" },
+      });
+      if (u.startsWith("/v2/invoicing/invoices?")) return { json: { total_items: 2, items: [invoice("INV2-A001", fakeEmail("b1")), invoice("INV2-B002", fakeEmail("outsider"))] } };
+      if (u === "/v2/invoicing/invoices/INV2-A001") return { json: invoice("INV2-A001", fakeEmail("b1")) };
+      if (u === "/v1/customer/disputes/PP-D-9") {
+        return { json: { dispute_id: "PP-D-9", status: "OPEN", buyer: { email: fakeEmail("outsider") }, messages: [{ posted_by: "BUYER", content: `Please mail me at ${fakeEmail("outsider")}` }], extensions: { secret: SECRET_NOTE } } };
+      }
+      return undefined;
+    });
+  }
+
+  it("invoice and dispute reads return small DTOs, recipients by alias, other emails masked", async () => {
+    const pp = leakySandbox();
+    const { get } = await start({ paypalConfig: FAKE_CONFIG, paypal: pp.client, settings: loadSettings(BUYERS) });
+    const list = await get("/api/invoices");
+    expect(list.body.data.invoices.map((r: any) => r.recipient)).toEqual(["Demo buyer 1", "o***@example.com"]);
+    expect(Object.keys(list.body.data.invoices[0]).sort()).toEqual(["amount", "id", "invoice_number", "item_names", "payer_view_url", "recipient", "status", "transaction_ids"]);
+
+    const one = await get("/api/invoices/INV2-A001");
+    expect(one.body.data).toMatchObject({ id: "INV2-A001", recipient: "Demo buyer 1", items: [] });
+    const dispute = await get("/api/disputes/PP-D-9");
+    expect(dispute.body.data.messages[0].content).toBe("Please mail me at o***@example.com");
+    expect(dispute.body.data.buyer).toBeUndefined();
+
+    for (const body of [list.body, one.body, dispute.body]) {
+      const text = JSON.stringify(body);
+      expect(text).not.toMatch(/[A-Za-z0-9._%+-]+@example\.com/);
+      expect(text).not.toContain(SECRET_NOTE);
+      expect(text).not.toContain("Buyer Co");
+    }
+  });
+
+  it("proposal views show the alias, not the address, and no attachment bytes", async () => {
+    const pp = sandbox();
+    const { post, get } = await start({ paypalConfig: FAKE_CONFIG, paypal: pp.client, settings: loadSettings(BUYERS) });
+    await post("/api/demo/seed");
+    await post("/api/disputes/PP-D-1/evidence-pack", { invoice_id: "INV2-PAID", tracking: { carrier: "Japan Post", tracking_number: "EJ123456789JP" } });
+    const all = await get("/api/proposals");
+    const text = JSON.stringify(all.body);
+    expect(text).not.toContain("@example.com");
+    expect(text).not.toContain('"base64"');
+    const evidence = all.body.data.find((p: any) => p.kind === "provide_dispute_evidence");
+    if (evidence) expect(evidence.payload.attachments[0]).toMatchObject({ name: expect.stringMatching(/\.pdf$/), bytes: expect.any(Number) });
+  });
+});

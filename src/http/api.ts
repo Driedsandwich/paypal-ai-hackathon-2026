@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { AiProvider } from "../ai/provider.js";
 import { BuyerSchema, EvidenceInputSchema, JpItemSchema, ListingForSaleSchema, ShipmentFactsSchema, type EvidenceInput, type UnpaidInvoice } from "../agent/schemas.js";
 import { Agent } from "../agent/tasks.js";
-import { chat, ChatInputSchema, invoiceBrief } from "../agent/tools.js";
+import { chat, ChatInputSchema } from "../agent/tools.js";
 import type { AppSettings } from "../config.js";
 import type { DemoBuyers } from "../demo/buyers.js";
 import { DEMO_ITEMS } from "../demo/items.js";
@@ -19,7 +19,7 @@ import { buildInvoicePayload, buildOrderPayload } from "../agent/tasks.js";
 import type { OrderRegistry } from "../proposals/order-registry.js";
 import { PROPOSAL_STATUSES, type Proposal, type ProposalKind, type ProposalStatus, type ProposalStore } from "../proposals/store.js";
 import { clientAddress, limitKey } from "./client-address.js";
-import { publicProposal } from "./dto.js";
+import { disputeDetail, disputeRow, invoiceDetail, invoiceRow, orderView, publicPack, publicProposal as toPublic } from "./dto.js";
 import { ensureSession, isSecureRequest } from "./session.js";
 import { HttpError, ok, readJsonBody } from "./util.js";
 
@@ -58,6 +58,11 @@ interface Ctx {
 }
 
 type Handler = (ctx: Ctx) => Promise<void>;
+
+/** Public view of a proposal (recipients by alias, no owner). */
+function publicProposal(ctx: Ctx, p: Proposal) {
+  return toPublic(p, ctx.deps.buyers);
+}
 
 /** Creates a proposal owned by the caller's session. */
 function propose<P>(ctx: Ctx, kind: ProposalKind, title: string, payload: P): Proposal<P> {
@@ -114,16 +119,6 @@ export function healthData(deps: ApiDeps) {
     demo: { notice: DEMO_NOTICE, buyerEmailsConfigured: deps.buyers.size, buyers: deps.buyers.publicList() },
     agStudio: { licensed: deps.settings.agStudioLicensed },
     banner: bannerMessages(deps),
-  };
-}
-
-function invoiceRow(inv: Invoice) {
-  return {
-    ...invoiceBrief(inv),
-    recipient_email: inv.primary_recipients?.[0]?.billing_info?.email_address,
-    item_names: (inv.items ?? []).map((i) => i.name),
-    transaction_ids: (inv.payments?.transactions ?? []).map((t) => t.payment_id).filter(Boolean),
-    payer_view_url: inv.detail?.metadata?.recipient_view_url,
   };
 }
 
@@ -190,11 +185,11 @@ const ROUTES: Route[] = [
       if (deps.settings.paymentPath === "order") {
         const prepared = await deps.agent.preparePaymentLink(body.listing, { alias });
         const proposal = propose(ctx, "create_payment_link", `Create payment link for ${showMoney(body.listing.price)} for ${alias}: ${body.listing.title}`, prepared.payload);
-        return ok(res, { path: "order", proposal: publicProposal(proposal), buyer_message: prepared.buyer_message, generated_by: prepared.generated_by });
+        return ok(res, { path: "order", proposal: publicProposal(ctx, proposal), buyer_message: prepared.buyer_message, generated_by: prepared.generated_by });
       }
       const prepared = await deps.agent.prepareInvoice(body.listing, { alias });
       const proposal = propose(ctx, "create_and_send_invoice", `Send invoice for ${showMoney(body.listing.price)} to ${alias}: ${body.listing.title}`, prepared.payload);
-      ok(res, { path: "invoice", proposal: publicProposal(proposal), buyer_message: prepared.buyer_message, generated_by: prepared.generated_by });
+      ok(res, { path: "invoice", proposal: publicProposal(ctx, proposal), buyer_message: prepared.buyer_message, generated_by: prepared.generated_by });
     },
   },
   {
@@ -207,7 +202,7 @@ const ROUTES: Route[] = [
       const alias = requireBuyer(deps, body.buyer?.alias);
       const prepared = await deps.agent.preparePaymentLink(body.listing, { alias });
       const proposal = propose(ctx, "create_payment_link", `Create payment link for ${showMoney(body.listing.price)} for ${alias}: ${body.listing.title}`, prepared.payload);
-      ok(res, { path: "order", proposal: publicProposal(proposal), buyer_message: prepared.buyer_message, generated_by: prepared.generated_by });
+      ok(res, { path: "order", proposal: publicProposal(ctx, proposal), buyer_message: prepared.buyer_message, generated_by: prepared.generated_by });
     },
   },
   {
@@ -216,7 +211,7 @@ const ROUTES: Route[] = [
     handler: async ({ res, deps, query }) => {
       const page = z.coerce.number().int().min(1).max(1000).catch(1).parse(query.get("page") ?? 1);
       const list = await requirePayPal(deps).listInvoices({ page, page_size: 20, total_required: true });
-      ok(res, { total_items: list.total_items ?? null, total_pages: list.total_pages ?? null, page, invoices: (list.items ?? []).map(invoiceRow) });
+      ok(res, { total_items: list.total_items ?? null, total_pages: list.total_pages ?? null, page, invoices: (list.items ?? []).map((inv) => invoiceRow(inv, deps.buyers)) });
     },
   },
   {
@@ -243,25 +238,18 @@ const ROUTES: Route[] = [
         }));
       const { reminders, generated_by } = await deps.agent.nudgeUnpaid(unpaid);
       const proposals = reminders.map((r) => propose(ctx, "send_invoice_reminder", `Send reminder for invoice ${r.invoice_id}`, r.payload));
-      ok(res, { unpaid_count: unpaid.length, proposals: proposals.map(publicProposal), generated_by });
+      ok(res, { unpaid_count: unpaid.length, proposals: proposals.map((p) => publicProposal(ctx, p)), generated_by });
     },
   },
   {
     method: "GET",
     pattern: /^\/api\/invoices\/([A-Za-z0-9_-]+)$/,
-    handler: async ({ res, deps, params }) => ok(res, await requirePayPal(deps).getInvoice(params[0]!)),
+    handler: async ({ res, deps, params }) => ok(res, invoiceDetail(await requirePayPal(deps).getInvoice(params[0]!), deps.buyers)),
   },
   {
     method: "GET",
     pattern: /^\/api\/orders\/([A-Za-z0-9_-]+)$/,
-    handler: async ({ res, deps, params }) => {
-      const o = await requirePayPal(deps).getOrder(params[0]!);
-      ok(res, {
-        id: o.id,
-        status: o.status,
-        captures: (o.purchase_units ?? []).flatMap((u) => u.payments?.captures ?? []).map((c) => ({ id: c.id, status: c.status, amount: c.amount })),
-      });
-    },
+    handler: async ({ res, deps, params }) => ok(res, orderView(await requirePayPal(deps).getOrder(params[0]!))),
   },
   {
     method: "POST",
@@ -277,7 +265,7 @@ const ROUTES: Route[] = [
       }
       const proposal = propose(ctx, "capture_order", `Capture payment for order ${orderId}`, { orderId });
       known.captureProposalId = proposal.id;
-      ok(res, { proposal: publicProposal(proposal) }, 201);
+      ok(res, { proposal: publicProposal(ctx, proposal) }, 201);
     },
   },
   {
@@ -292,7 +280,7 @@ const ROUTES: Route[] = [
           orderId: body.order_id,
           tracker: { capture_id: body.capture_id, tracking_number: body.tracking_number, ...carrierFor(body.carrier, "orders"), notify_payer: body.notify_buyer },
         });
-        return ok(res, { proposal: publicProposal(proposal) }, 201);
+        return ok(res, { proposal: publicProposal(ctx, proposal) }, 201);
       }
       let transactionId = body.transaction_id;
       if (!transactionId && body.invoice_id) {
@@ -304,7 +292,7 @@ const ROUTES: Route[] = [
       const proposal = propose(ctx, "add_invoice_tracking", `Add ${body.carrier} tracking ${body.tracking_number} to transaction ${transactionId}`, {
         trackers: [{ transaction_id: transactionId, tracking_number: body.tracking_number, status: "SHIPPED", ...carrierFor(body.carrier, "shipping"), notify_buyer: body.notify_buyer }],
       });
-      ok(res, { proposal: publicProposal(proposal) }, 201);
+      ok(res, { proposal: publicProposal(ctx, proposal) }, 201);
     },
   },
   {
@@ -312,24 +300,13 @@ const ROUTES: Route[] = [
     pattern: /^\/api\/disputes$/,
     handler: async ({ res, deps }) => {
       const list = await requirePayPal(deps).listDisputes({ page_size: 50 });
-      ok(res, {
-        disputes: (list.items ?? []).map((d) => ({
-          dispute_id: d.dispute_id,
-          reason: d.reason,
-          status: d.status,
-          dispute_state: d.dispute_state,
-          stage: d.dispute_life_cycle_stage,
-          amount: d.dispute_amount,
-          create_time: d.create_time,
-          seller_response_due_date: d.seller_response_due_date,
-        })),
-      });
+      ok(res, { disputes: (list.items ?? []).map(disputeRow) });
     },
   },
   {
     method: "GET",
     pattern: /^\/api\/disputes\/([A-Za-z0-9_-]+)$/,
-    handler: async ({ res, deps, params }) => ok(res, await requirePayPal(deps).getDispute(params[0]!)),
+    handler: async ({ res, deps, params }) => ok(res, disputeDetail(await requirePayPal(deps).getDispute(params[0]!))),
   },
   {
     method: "POST",
@@ -372,10 +349,10 @@ const ROUTES: Route[] = [
       });
       const pack = await deps.agent.disputeEvidencePack(input);
       const proposals = {
-        provide_evidence: publicProposal(propose(ctx, "provide_dispute_evidence", `Provide evidence for dispute ${d.dispute_id}`, pack.evidence_payload)),
-        send_message: publicProposal(propose(ctx, "send_dispute_message", `Send reply to buyer in dispute ${d.dispute_id}`, pack.message_payload)),
+        provide_evidence: publicProposal(ctx, propose(ctx, "provide_dispute_evidence", `Provide evidence for dispute ${d.dispute_id}`, pack.evidence_payload)),
+        send_message: publicProposal(ctx, propose(ctx, "send_dispute_message", `Send reply to buyer in dispute ${d.dispute_id}`, pack.message_payload)),
       };
-      ok(res, { pack, proposals });
+      ok(res, { pack: publicPack(pack), proposals });
     },
   },
   {
@@ -385,33 +362,36 @@ const ROUTES: Route[] = [
       const { req, res, deps, params } = ctx;
       const body = z.object({ note: z.string().trim().min(1).max(2000) }).parse(await readJsonBody(req, MAX_API_BODY));
       requirePayPal(deps);
-      ok(res, { proposal: publicProposal(propose(ctx, "accept_dispute_claim", `Accept claim and refund the buyer in dispute ${params[0]}`, { disputeId: params[0]!, note: body.note })) }, 201);
+      ok(res, { proposal: publicProposal(ctx, propose(ctx, "accept_dispute_claim", `Accept claim and refund the buyer in dispute ${params[0]}`, { disputeId: params[0]!, note: body.note })) }, 201);
     },
   },
   {
     method: "GET",
     pattern: /^\/api\/proposals$/,
-    handler: async ({ res, deps, query, session }) => {
+    handler: async (ctx) => {
+      const { res, deps, query, session } = ctx;
       const status = z.enum(PROPOSAL_STATUSES as [ProposalStatus, ...ProposalStatus[]]).optional().catch(undefined).parse(query.get("status") ?? undefined) as ProposalStatus | undefined;
-      ok(res, deps.proposals.list({ owner: session, ...(status ? { status } : {}) }).map(publicProposal));
+      ok(res, deps.proposals.list({ owner: session, ...(status ? { status } : {}) }).map((p) => publicProposal(ctx, p)));
     },
   },
   {
     method: "POST",
     pattern: /^\/api\/proposals\/([A-Za-z0-9_-]+)\/approve$/,
-    handler: async ({ req, res, deps, params, session }) => {
+    handler: async (ctx) => {
+      const { req, res, deps, params, session } = ctx;
       await readJsonBody(req, MAX_API_BODY); // body ignored: the stored payload is what runs
       if (deps.proposals.get(params[0]!, session)) requirePayPal(deps);
       const p = await deps.proposals.approve(params[0]!, session);
-      ok(res, publicProposal(p));
+      ok(res, publicProposal(ctx, p));
     },
   },
   {
     method: "POST",
     pattern: /^\/api\/proposals\/([A-Za-z0-9_-]+)\/reject$/,
-    handler: async ({ req, res, deps, params, session }) => {
+    handler: async (ctx) => {
+      const { req, res, deps, params, session } = ctx;
       await readJsonBody(req, MAX_API_BODY);
-      ok(res, publicProposal(deps.proposals.reject(params[0]!, session)));
+      ok(res, publicProposal(ctx, deps.proposals.reject(params[0]!, session)));
     },
   },
   {
@@ -443,14 +423,15 @@ const ROUTES: Route[] = [
         payload = { orders: listings.map((l, i) => buildOrderPayload(l, deps.buyers.at(i).alias, { publicBaseUrl: s.publicBaseUrl, ...(s.sellerBusinessName ? { sellerBusinessName: s.sellerBusinessName } : {}) })) };
       }
       const count = (payload.invoices ?? payload.orders ?? []).length;
-      ok(res, { proposal: publicProposal(propose(ctx, "seed_demo_data", `Seed ${count} sample ${s.paymentPath === "invoice" ? "invoices" : "payment links"} for the demo buyers in the PayPal sandbox`, payload)) }, 201);
+      ok(res, { proposal: publicProposal(ctx, propose(ctx, "seed_demo_data", `Seed ${count} sample ${s.paymentPath === "invoice" ? "invoices" : "payment links"} for the demo buyers in the PayPal sandbox`, payload)) }, 201);
     },
   },
   {
     method: "POST",
     pattern: /^\/api\/chat$/,
     ai: true,
-    handler: async ({ req, res, deps, session }) => {
+    handler: async (ctx) => {
+      const { req, res, deps, session } = ctx;
       const body = ChatInputSchema.parse(await readJsonBody(req, MAX_API_BODY));
       const result = await chat(
         deps.ai,
@@ -465,7 +446,7 @@ const ROUTES: Route[] = [
         body.messages,
         deps.settings.aiMaxOutputTokens,
       );
-      ok(res, { ...result, proposals: result.proposals.map(publicProposal) });
+      ok(res, { ...result, proposals: result.proposals.map((p) => publicProposal(ctx, p)) });
     },
   },
 ];

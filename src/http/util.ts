@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { ZodError } from "zod";
 import { AgentOutputError } from "../agent/json-task.js";
 import { MoneyError } from "../money.js";
+import { maskEmailsDeep } from "../privacy/mask.js";
 import { AiTimeoutError } from "../ai/ai-sdk-provider.js";
 import { PayPalApiError, PayPalTimeoutError } from "../paypal/client.js";
 import { ProposalError } from "../proposals/store.js";
@@ -19,9 +20,10 @@ export class HttpError extends Error {
   }
 }
 
+/** Every JSON response passes through here; email addresses in it are masked (F3). */
 export function sendJson(res: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}): void {
-  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store", ...headers });
-  res.end(JSON.stringify(body));
+  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", ...headers });
+  res.end(JSON.stringify(maskEmailsDeep(body)));
 }
 
 export function ok(res: ServerResponse, data: unknown, status = 200): void {

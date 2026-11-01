@@ -9,7 +9,8 @@ interface Row {
   invoice_date?: string;
   amount?: Partial<Money>;
   due_amount?: Money;
-  recipient_email?: string;
+  /** Demo buyer alias (or a masked address for other recipients). */
+  recipient?: string;
   item_names: string[];
   transaction_ids: string[];
 }
@@ -61,7 +62,7 @@ export function InvoicesView({ health, onProposal }: { health: Health; onProposa
                 <td><span className={`badge ${r.status === "PAID" ? "ok" : r.status === "SENT" || r.status === "UNPAID" ? "warn" : ""}`}>{r.status}</span></td>
                 <td>{r.invoice_date}</td>
                 <td>{r.amount?.value} {r.amount?.currency_code}</td>
-                <td>{r.recipient_email}</td>
+                <td>{r.recipient}</td>
                 <td>{r.item_names.join(", ")}</td>
                 <td><code>{r.transaction_ids.join(", ")}</code></td>
               </tr>
