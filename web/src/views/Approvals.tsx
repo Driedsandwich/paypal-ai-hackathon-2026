@@ -25,7 +25,13 @@ export function ApprovalsView({ health, data, refresh, route }: ViewProps) {
     const hay = `${p.title} ${KIND_LABEL[p.kind]} ${j?.title_ja ?? ""} ${j?.title_en ?? ""} ${j?.country_name ?? ""} ${j?.buyer ?? ""} ${p.sale_id ?? ""}`.toLowerCase();
     return hay.includes(query.trim().toLowerCase());
   });
-  const selected = shown.find((p) => p.id === route.arg) ?? (route.arg ? items?.find((p) => p.id === route.arg) : undefined) ?? shown[0];
+  // Keep the item on screen after a decision (it leaves the "Needs approval" list) until another is picked.
+  const [stickyId, setStickyId] = useState<string | undefined>();
+  const wanted = route.arg ?? stickyId;
+  const selected = (wanted ? items?.find((p) => p.id === wanted) : undefined) ?? shown[0];
+  useEffect(() => {
+    if (selected && selected.id !== stickyId) setStickyId(selected.id);
+  }, [selected?.id]);
   const pendingCount = (items ?? []).filter((p) => p.status === "pending").length;
 
   return (
