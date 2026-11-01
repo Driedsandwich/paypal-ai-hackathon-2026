@@ -267,3 +267,13 @@ describe("input validation and limits", () => {
     expect(loadSettings({ AG_STUDIO_LICENSE: "x" }).agStudioLicensed).toBe(true);
   });
 });
+
+describe("client address behind a proxy (TRUST_PROXY_HOPS)", () => {
+  it("rate limits by the proxy-appended address; forged X-Forwarded-For entries do not help", async () => {
+    const { post } = await start({ settings: loadSettings({ AI_RATE_LIMIT_PER_IP: "1", TRUST_PROXY_HOPS: "1" }) });
+    const as = (xff: string) => ({ "Content-Type": "application/json", "X-Forwarded-For": xff });
+    expect((await post("/api/listings/draft", { item: TEA_ITEM }, as("9.9.9.9, 198.51.100.1"))).status).toBe(200);
+    expect((await post("/api/listings/draft", { item: TEA_ITEM }, as("8.8.8.8, 198.51.100.1"))).status).toBe(429);
+    expect((await post("/api/listings/draft", { item: TEA_ITEM }, as("198.51.100.2"))).status).toBe(200);
+  });
+});

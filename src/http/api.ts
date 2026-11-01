@@ -15,7 +15,8 @@ import type { Invoice } from "../paypal/types.js";
 import type { SeedDemoDataPayload } from "../proposals/actions.js";
 import { buildInvoicePayload, buildOrderPayload } from "../agent/tasks.js";
 import type { ProposalStatus, ProposalStore } from "../proposals/store.js";
-import { clientKey, HttpError, ok, readJsonBody } from "./util.js";
+import { clientAddress, limitKey } from "./client-address.js";
+import { HttpError, ok, readJsonBody } from "./util.js";
 
 export interface ApiDeps {
   settings: AppSettings;
@@ -421,7 +422,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
   const route = matching.find((r) => r.method === req.method);
   if (!route) throw new HttpError(405, "method_not_allowed", `Use ${matching.map((r) => r.method).join(" or ")}`, {}, { Allow: matching.map((r) => r.method).join(", ") });
   if (route.ai) {
-    const verdict = deps.limiter.take(clientKey(req, deps.settings.trustProxy));
+    const verdict = deps.limiter.take(limitKey(clientAddress(req, deps.settings.trustProxyHops)));
     if (!verdict.ok) {
       throw new HttpError(429, verdict.reason === "per_ip" ? "rate_limited" : "daily_cap_reached", verdict.message, { retryAfterSeconds: verdict.retryAfterSeconds }, { "Retry-After": String(verdict.retryAfterSeconds) });
     }

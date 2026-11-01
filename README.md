@@ -158,7 +158,7 @@ See `.env.example`. Never commit `.env`. All are optional.
 | `SELLER_BUSINESS_NAME` | Seller name on invoices and the PayPal checkout page. |
 | `PUBLIC_BASE_URL` | Public URL of the app, for PayPal return/cancel URLs (default `http://localhost:PORT`). |
 | `DEMO_BUYER_EMAILS` | Sandbox buyer account emails for *Seed demo data*, comma-separated. |
-| `TRUST_PROXY` | `1` behind a hosting proxy, so rate limits use `X-Forwarded-For`. |
+| `TRUST_PROXY_HOPS` | Number of trusted proxies in front of the app (default 0 = use the socket address). With N > 0 the client address is the N-th `X-Forwarded-For` entry from the right, validated as an IP (falls back to the socket address). Behind a single platform proxy such as Render, set 1. |
 | `AG_STUDIO_LICENSE` | AG Studio licence for the dashboard (next pass); empty shows a watermark. |
 | `PORT` | HTTP port (default 3000). |
 

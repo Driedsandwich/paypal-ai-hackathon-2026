@@ -5,7 +5,7 @@ import { createAiProviderFromEnv, FakeAiProvider } from "./ai/index.js";
 import { offlineReply } from "./ai/offline.js";
 import type { AiProvider } from "./ai/provider.js";
 import { Agent } from "./agent/tasks.js";
-import { loadOptionalPayPalConfig, loadSettings, type AppSettings } from "./config.js";
+import { legacySettingWarnings, loadOptionalPayPalConfig, loadSettings, type AppSettings } from "./config.js";
 import { EventLog } from "./events/log.js";
 import { handleApi, healthData, type ApiDeps } from "./http/api.js";
 import { paypalReturnPage, serveStatic } from "./http/static.js";
@@ -139,6 +139,7 @@ if (isMain) {
   const log = (msg: string) => console.log(`[okuri] ${msg}`);
   const staticDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "public");
   const options: AppOptions = { settings, ai, staticDir, log, ...(paypalConfig ? { paypalConfig } : {}) };
+  for (const w of legacySettingWarnings()) log(`warning: ${w}`);
   const app = createApp(options);
   app.listen(settings.port, () => {
     log(`Listening on http://localhost:${settings.port}`);

@@ -85,12 +85,3 @@ export function sendError(res: ServerResponse, err: unknown, log: (msg: string) 
   }
   return sendJson(res, 500, { ok: false, error: { code: "internal_error", message: "Internal error" } });
 }
-
-export function clientKey(req: IncomingMessage, trustProxy: boolean): string {
-  if (trustProxy) {
-    const xff = req.headers["x-forwarded-for"];
-    const first = (Array.isArray(xff) ? xff[0] : xff)?.split(",")[0]?.trim();
-    if (first) return first;
-  }
-  return req.socket.remoteAddress ?? "unknown";
-}

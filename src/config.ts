@@ -18,16 +18,26 @@ export interface AppSettings {
   sellerBusinessName: string | undefined;
   demoBuyerEmails: string[];
   agStudioLicensed: boolean;
-  /** Use the first X-Forwarded-For hop as the client address (behind a hosting proxy). */
-  trustProxy: boolean;
+  /**
+   * Number of trusted proxies in front of the app (TRUST_PROXY_HOPS). 0 = use the socket
+   * address; N = use the N-th X-Forwarded-For entry from the right (1 on Render).
+   */
+  trustProxyHops: number;
 }
 
-function num(env: NodeJS.ProcessEnv, name: string, fallback: number, min: number, max: number): number {
+function num(env: NodeJS.ProcessEnv, name: string, fallback: number, min: number, max: number, integer = false): number {
   const raw = (env[name] ?? "").trim();
   if (raw === "") return fallback;
   const n = Number(raw);
-  if (!Number.isFinite(n) || n < min || n > max) throw new Error(`${name} must be a number between ${min} and ${max} (got "${raw}")`);
+  if (!Number.isFinite(n) || n < min || n > max || (integer && !Number.isInteger(n))) {
+    throw new Error(`${name} must be ${integer ? "a whole number" : "a number"} between ${min} and ${max} (got "${raw}")`);
+  }
   return n;
+}
+
+/** Settings that are no longer read; the server logs a hint when one is set. */
+export function legacySettingWarnings(env: NodeJS.ProcessEnv = process.env): string[] {
+  return (env.TRUST_PROXY ?? "").trim() ? ["TRUST_PROXY is no longer used: set TRUST_PROXY_HOPS (0 = socket address, 1 = one proxy such as Render)."] : [];
 }
 
 export function parsePaymentPath(value: string | undefined): PaymentPath {
@@ -55,7 +65,7 @@ export function loadSettings(env: NodeJS.ProcessEnv = process.env): AppSettings 
       .map((s) => s.trim())
       .filter(Boolean),
     agStudioLicensed: (env.AG_STUDIO_LICENSE ?? "").trim() !== "",
-    trustProxy: ["1", "true", "yes"].includes((env.TRUST_PROXY ?? "").trim().toLowerCase()),
+    trustProxyHops: num(env, "TRUST_PROXY_HOPS", 0, 0, 10, true),
   };
 }
 
