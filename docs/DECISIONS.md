@@ -255,3 +255,100 @@ each fix; these are the choices made while implementing them.
     `LIST_CACHE_SECONDS`, `WEBHOOK_RATE_LIMIT`, `WEBHOOK_GLOBAL_RATE_LIMIT`,
     `SEED_SESSION_INTERVAL_MINUTES`, `SEED_DAILY_CAP`, `EXECUTION_CONCURRENCY`,
     `AI_INVALID_RATE_LIMIT_PER_IP`. Removed: `TRUST_PROXY`.
+
+## Pass 2 (2026-11-01): design, journeys, hosting
+
+Pass-1 and pass-2a decisions stand as written above (model `claude-opus-5-5` with the per-call
+output cap, no login, name "Okuri", demo sessions, limits, masking, dispute/state checks).
+
+### Design
+
+44. **Structure from S3, look from A1** (`docs/design/DESIGN.md`), written down region by region
+    in `docs/design/LAYOUT_TABLE.md` before the UI code. Borrowed: S1's inbox for Approvals
+    (list + detail + action bar), S4's per-country idea for Insights (as a bar chart and a
+    country ledger, see 52). Navigation is a top tab row (S3) with A1's selected style
+    (vermilion rule + lighter paper), not A1's sidebar. Switchable themes: not built.
+45. **Labels are honest.** The model chip shows the configured provider's name ("Claude" for
+    `anthropic`, "Gemini", "OpenAI"), with the model id as tooltip; with the fake provider it
+    says "Offline AI", never "Claude". The PayPal chip says "PayPal sandbox", plus "· offline"
+    when the simulator runs. The committed screenshots were taken offline, so they show
+    "Offline AI" and "· offline" where the targets show "Claude" and "PayPal sandbox".
+46. **Fonts** are self-hosted with `@fontsource` (Noto Serif JP 600/700, Noto Sans JP 400/700),
+    not loaded from Google at runtime (privacy, and the screenshot browser has no CJK fonts).
+    The browser loads only the unicode-range chunks it needs.
+47. **Callouts keep Reject next to Approve** (the S3 target shows only Review + Approve): the
+    A1 rule pairs Approve with Reject, and rejecting from the journey avoids a detour.
+48. **Demo notices are one line** with a details disclosure (the banner rows of pass 1 pushed the
+    journey below the fold); the offline state is also in the PayPal chip.
+
+### Journeys and the offline demo
+
+49. **A sale ("journey") registry** (`src/journeys/sales.ts`, in memory, 5,000 entries, 7 days)
+    ties draft, invoice/order, payment, tracking and dispute together. Every listing draft
+    starts a journey. A journey is private to its session until PayPal holds the invoice or
+    order; then every visitor sees it (it is on the shared sandbox account, like the pass-1
+    invoice list). Journeys are computed on each read from the registry, PayPal's invoice list
+    (page 1, 50 items, cached 30 s) and dispute list, and the visitor's own proposals.
+50. **Marker in PayPal records:** invoices carry `detail.reference = "Okuri OK-1234 US"` (shown
+    to the buyer as the invoice reference), payment links `purchase_units[0].custom_id` (not
+    shown). After a restart of the free instance the app rebuilds journeys from marked invoices
+    and still recognises them for tracking. Orders cannot be listed, so order journeys are
+    memory-only. The marker also carries the buyer country (no PayPal field holds it; the seller
+    chooses it on New item). Disputes are linked to a sale by
+    `disputed_transactions[].seller_transaction_id` (or `invoice_number`) when PayPal's list
+    returns them; this is **not verified against the sandbox** (the list may omit them).
+51. **Offline demo is opt-in** (`PAYPAL_OFFLINE_DEMO=true`), not automatic without credentials,
+    so the pass-1 behaviour (503 + banner) stays. It implements the app's PayPal calls in memory
+    (`src/paypal/offline.ts`, `PayPalApi` = the subset of `PayPalClient` the app uses) with one
+    private world per session (500 worlds, 24 h), seeded with six fictional sales at different
+    steps and three pending proposals. Buyers are three made-up addresses on `.invalid`, built
+    at runtime. Simulated buyer actions (`POST /api/offline/simulate`: payment, dispute,
+    delivery) exist only in this mode; "Delivered" is never used to mean "dispute resolved".
+    Approvals, limits and the executor run exactly as with PayPal.
+52. **Tracking only for sales this demo created** (follow-up to pass 2a): the tracking route and
+    the chat tool accept an invoice or order when it is in the registry or carries the marker;
+    a bare `transaction_id` is accepted only when it belongs to a registered sale. Others get
+    403 `not_created_by_demo`. Demo-wide, not per session (a judge may pay in one browser and
+    ship in another). Two pass-1 tests were changed to give their fake invoice/order a marker.
+
+### Insights
+
+53. **AG Studio is used** (`ag-studio-react` 3.0.0 + `ag-studio` 3.0.0; it pulls
+    `ag-grid-enterprise` and `ag-charts-enterprise`): installable, works with React 19 and
+    Vite 8, no fallback to AG Grid/Charts Community was needed. A pre-built view-mode report:
+    bar chart "revenue by buyer country", grid "unpaid invoices", value widget "dispute rate"
+    (disputed ÷ paid sales, a measure expression), grid "by country". AG Studio has **no map
+    widget**, so S4's map became the bar chart and the country ledger. Data comes from
+    `/api/journeys` in the browser (USD sales only). The view is lazy-loaded (one ~5 MB chunk,
+    1.5 MB gzip). `AG_STUDIO_LICENSE` is passed to the browser through `/api/health` (AG
+    licence keys are browser keys); without it AG Studio runs as a trial: a console message and
+    a "For Trial Use Only" mark that fades after a few seconds, only on non-localhost hosts.
+    Licence: commercial (AG Grid EULA), listed in the README.
+
+### AI fallback
+
+54. **`AI_FALLBACK_PROVIDER`** (+ `AI_FALLBACK_MODEL`, `AI_FALLBACK_API_KEY`,
+    `AI_FALLBACK_DAILY_CAP`, default 300): the fallback answers when the primary throws (API
+    error), times out (45 s), stops with `finishReason: "length"` (cut off by
+    `AI_MAX_OUTPUT_TOKENS`), or its daily budget (`AI_DAILY_CAP`) is used up. The fallback has
+    its own daily budget and a 30 s deadline. The route-level daily check passes while either
+    provider has budget; the per-address limits are shared. A chat whose tools already ran on
+    the primary is not repeated (it could queue the same proposal twice). Answers carry
+    `generated_by.fallback_from { provider, model, reason }`; the UI shows "Gemini · fallback".
+    A fallback provider without a key is skipped with a log warning (the server still starts).
+
+### Hosting
+
+55. **Render free web service** (`render.yaml`): `npm ci && npm run build`, `npm start`, health
+    check `/api/health`, `NODE_VERSION=22.12.0`, `TRUST_PROXY_HOPS=1`, `PORT=10000`,
+    `autoDeploy: false`, every `.env.example` name; credentials and per-deployment values
+    (PayPal id/secret/webhook id, AI keys, AG Studio licence, demo buyer emails, public URL,
+    seller name) have `sync: false`. Defaults: `AI_PROVIDER=anthropic`, `AI_MODEL=claude-opus-5-5`,
+    `AI_FALLBACK_PROVIDER=google`. Render's docs could not be opened from the build environment
+    (proxy 403), so the Blueprint follows the spec as known; check on first deploy.
+56. **The sandbox buyer login for judges** goes into the Devpost testing instructions, not the
+    public repository.
+57. **New env names in pass 2:** `PAYPAL_OFFLINE_DEMO`, `AI_FALLBACK_PROVIDER`,
+    `AI_FALLBACK_MODEL`, `AI_FALLBACK_API_KEY`, `AI_FALLBACK_DAILY_CAP` (all in `.env.example`).
+    New routes: `GET /api/journeys`, `POST /api/offline/simulate`. `/api/health` adds
+    `paypal.offline`, `countries`, `ai.fallback`, `limits.fallback`, `agStudio.licenseKey`.

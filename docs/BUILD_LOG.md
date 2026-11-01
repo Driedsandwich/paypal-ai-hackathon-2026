@@ -176,3 +176,84 @@ and a PayPal-limits line).
    `X-Forwarded-For` (then `TRUST_PROXY_HOPS=1`).
 
 Pass 1 open questions 5 (no login) and 7 (return URL abuse) are answered by F1 and F4.
+
+## Pass 2: 2026-11-01 (visual design, journeys, Insights, hosting)
+
+Branch `claude/build-v1` (pushed after each milestone; no pull request, nothing merged into
+`main`). Pass 2a (commit 7a1eb47) is kept as is; its tests stay green.
+
+### Result
+
+- `npm run typecheck`, `npm test`, `npm run build`, `npm run prepublish-check` pass locally on
+  Node 22 after every commit. No local Node 20; every new dependency's `engines` allows Node 20
+  and CI runs both.
+- **Tests: 202 before (16 files), 215 after (18 files).** New: `test/journeys.test.ts` (offline
+  demo end to end over HTTP, private worlds per visitor, new item → journey, tracking allowlist
+  for route and chat tool, rebuild from markers, simulator rules), `test/ai-fallback.test.ts`.
+  Two existing tests changed on purpose: the fake invoice/order used for tracking in
+  `test/api.test.ts` now carries the marker (tracking for foreign ids is refused now), and the
+  `/health` shape in `test/paypal-webhook.test.ts` has `offline: false`.
+- Browser check: a Playwright run against the built server in offline mode clicked through
+  approve invoice → simulate payment → add tracking → approve → simulate dispute → evidence
+  pack → approve reply → New item → prepare invoice → approve in the inbox, with no page or
+  console errors (script not committed; `scripts/screenshots.mjs` is).
+
+### What I built
+
+| Item | Where | Status |
+| --- | --- | --- |
+| 1 Layout table before UI code | `docs/design/LAYOUT_TABLE.md` | Done |
+| 1 Journey home (S3 structure, A1 look) | `web/src/views/Journeys.tsx`, `web/src/styles.css` | Done |
+| 1 Approvals inbox (S1) | `web/src/views/Approvals.tsx` | Done |
+| 1 New item, Disputes, Tools (chat, webhooks, seed) in the same system | `web/src/views/` | Done |
+| 1 "Claude" / "PayPal sandbox" labels | header chips, `providerLabel` | Done (honest labels, DECISIONS 45) |
+| 1 Screenshots 1440×900 and 390×844, side-by-side comparisons | `docs/media/*.png`, `docs/media/compare-*.png` | Done |
+| 2 Insights with AG Studio | `web/src/views/Insights.tsx` | Done (no map widget exists; DECISIONS 53) |
+| 3 Tracking only for this demo's orders and invoices | `src/journeys/created-here.ts` | Done |
+| 4 AI fallback provider, shown in the UI | `src/ai/fallback.ts`, `src/ai/index.ts` | Done |
+| 5 Render Blueprint, README hosted demo + walkthrough + local setup | `render.yaml`, `README.md` | Done (not deployed) |
+| Offline demo (needed for "end to end with the offline demo") | `src/paypal/offline.ts`, `src/journeys/offline-world.ts` | Done |
+| Journeys API, sale registry, markers | `src/journeys/`, `src/http/api.ts` | Done |
+
+### Comparison with the targets (largest differences fixed)
+
+Compared in `docs/media/compare-journey-desktop.png` (S3 | ours | A1),
+`compare-journey-mobile.png` (S3 | ours | ours with menu open | A1),
+`compare-approvals-desktop.png` (S1 | ours | A1) and `compare-insights-desktop.png`
+(S4 | ours | A1). Fixed after the first comparison: three banner rows pushed the journey down
+(now one line with details), long Japanese titles took three lines (now at most two), the
+mobile count strip wrapped 4+1 (now 3+2 as in S3), a callout on the last step covered the
+country label, the inbox search box collapsed, a duplicated "Invoice draft" caption, the first
+journey shown was the long-title draft instead of the invoice waiting for approval.
+Remaining, on purpose or minor: the labels say "Offline AI" / "· offline" in the offline
+screenshots; callouts have Reject as well as Approve; the S3 "Item $110 + Shipping $18"
+breakdown is not shown because invoices have no shipping line (pass-1 open question 6); the
+mobile menu pushes the content down by one block (the sale heading and current step stay on
+screen, as required); AG Studio widgets keep AG Studio's own title/axis typography details.
+
+### Not done, or only partly, and why
+
+- **Not deployed to Render** and not run against the real sandbox or a real model (no
+  credentials here, none added). Placeholder URL in the README. Render's docs could not be
+  opened from this environment; the Blueprint is unverified until the first deploy.
+- **Dispute ↔ sale linking from PayPal's dispute list** relies on `disputed_transactions` in the
+  list response; not verified against the sandbox. If missing, live journeys show no dispute
+  branch (the Disputes view still lists all disputes).
+- **Live journey state that PayPal does not hold** (tracking added, activity log) is lost when
+  the free instance restarts; invoice status and payment come back from PayPal. Payment-link
+  (order) journeys are memory-only. Delivery is only known in the offline demo.
+- **Shipping as a separate invoice line** (the S3 callout's "Item + Shipping") not built.
+- **Insights mobile:** AG Studio needs about 600 px width, so on phones it scrolls sideways in
+  its own box under a plain-HTML summary (revenue, unpaid, dispute rate).
+- **Switchable themes:** out of scope as asked.
+- The AG Studio chunk is large (≈1.5 MB gzip), loaded only when Insights opens.
+
+### Open questions for you
+
+1. Deploy from `render.yaml` and fill in the URL; confirm the Node version and that Render's
+   proxy appends the client address (`TRUST_PROXY_HOPS=1`). Should the hosted demo run with the
+   real sandbox, or `PAYPAL_OFFLINE_DEMO=true` until the sandbox account is checked?
+2. Is the invoice `reference` field (shown to the buyer as "Okuri OK-1234 US") acceptable as the
+   marker, or should it use another field?
+3. Do you have an AG Studio licence key for `AG_STUDIO_LICENSE`, or is the trial mark fine?
+4. Keep Reject in the journey callouts (A1 pairing) or match S3's Review + Approve only?
