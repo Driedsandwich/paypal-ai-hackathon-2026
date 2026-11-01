@@ -25,10 +25,16 @@ export type ProposalKind = (typeof PROPOSAL_KINDS)[number];
  *   never retried automatically.
  * - obsolete: right before execution the action was no longer allowed (e.g. the dispute
  *   moved on); nothing was sent.
+ * - expired: nobody approved it within 24 hours; it can no longer run.
  */
-export type ProposalStatus = "pending" | "executing" | "executed" | "failed" | "rejected" | "unknown" | "obsolete";
+export type ProposalStatus = "pending" | "executing" | "executed" | "failed" | "rejected" | "unknown" | "obsolete" | "expired";
 
-export const PROPOSAL_STATUSES: readonly ProposalStatus[] = ["pending", "executing", "executed", "failed", "rejected", "unknown", "obsolete"];
+export const PROPOSAL_STATUSES: readonly ProposalStatus[] = ["pending", "executing", "executed", "failed", "rejected", "unknown", "obsolete", "expired"];
+
+/** Store capacity and limits on unresolved work. */
+export const PROPOSAL_STORE_MAX = 500;
+export const PROPOSAL_PENDING_TTL_MS = 24 * 3_600_000;
+export const PROPOSAL_MAX_PENDING_PER_ADDRESS = 50;
 
 /** Thrown by the executor when the action is no longer allowed; the proposal becomes "obsolete". */
 export class ProposalObsoleteError extends Error {
@@ -53,6 +59,8 @@ export interface Proposal<P = unknown> {
   id: string;
   /** Demo session that created the proposal. Only this session can see, approve or reject it. Never returned publicly. */
   owner: string;
+  /** Rate-limit key of the creating client (for the pending cap). Never returned publicly. */
+  address?: string;
   kind: ProposalKind;
   /** One line for the seller, e.g. "Send invoice for USD 80.00 to the buyer". */
   title: string;
@@ -73,7 +81,7 @@ export interface Proposal<P = unknown> {
 export class ProposalError extends Error {
   constructor(
     message: string,
-    readonly code: "not_found" | "not_pending",
+    readonly code: "not_found" | "not_pending" | "store_full" | "too_many_pending",
   ) {
     super(message);
     this.name = "ProposalError";
@@ -93,6 +101,8 @@ export interface ProposeOptions {
   owner: string;
   /** Text for the seller to copy into a DM (not sent to PayPal). */
   copyForDm?: string;
+  /** Rate-limit key of the creating client; at most 50 pending proposals per address. */
+  address?: string;
 }
 
 function deepFreeze<T>(value: T): T {
@@ -116,15 +126,77 @@ export class ProposalStore {
       describeError?: (err: unknown) => unknown;
       /** Errors for which the outcome at PayPal is unknown (e.g. a write that timed out). */
       isUnknownOutcome?: (err: unknown) => boolean;
+      /** Pending proposals expire after this many ms (default 24 h). */
+      pendingTtlMs?: number;
+      maxPendingPerAddress?: number;
     } = {},
   ) {}
 
+  private nowMs(): number {
+    return (this.options.now?.() ?? new Date()).getTime();
+  }
+
+  /** Marks pending proposals older than the TTL as expired (they can no longer run). */
+  private expire(): void {
+    const cutoff = this.nowMs() - (this.options.pendingTtlMs ?? PROPOSAL_PENDING_TTL_MS);
+    for (const p of this.items.values()) {
+      if (p.status === "pending" && Date.parse(p.createdAt) <= cutoff) {
+        p.status = "expired";
+        p.decidedAt = new Date(this.nowMs()).toISOString();
+        p.error = { message: "Nobody approved this within 24 hours, so it expired. Nothing was sent." };
+      }
+    }
+  }
+
+  /**
+   * Makes room for one more proposal by dropping the oldest finished ones. Pending and
+   * executing proposals are never dropped: when the store is full of them, new proposals are
+   * refused instead (F4).
+   */
+  private makeRoom(): void {
+    const max = this.options.max ?? PROPOSAL_STORE_MAX;
+    if (this.items.size < max) return;
+    this.expire();
+    // Finished ones first; "unknown" (needs checking) last.
+    for (const pass of [(p: Proposal) => p.status !== "pending" && p.status !== "executing" && p.status !== "unknown", (p: Proposal) => p.status === "unknown"]) {
+      for (const [id, p] of this.items) {
+        if (this.items.size < max) return;
+        if (pass(p)) this.items.delete(id);
+      }
+    }
+    if (this.items.size >= max) {
+      throw new ProposalError("The demo's approval queue is full of proposals waiting for a decision. Approve or reject some, or try again later.", "store_full");
+    }
+  }
+
+  /** Throws ProposalError (store_full / too_many_pending) when this proposal cannot be added. */
+  assertRoom(count = 1, address?: string): void {
+    this.expire();
+    if (address) {
+      const max = this.options.maxPendingPerAddress ?? PROPOSAL_MAX_PENDING_PER_ADDRESS;
+      let pending = 0;
+      for (const p of this.items.values()) if (p.address === address && p.status === "pending") pending += 1;
+      if (pending + count > max) {
+        throw new ProposalError(`Too many proposals from your address are waiting for a decision (limit ${max}). Approve or reject some first.`, "too_many_pending");
+      }
+    }
+    const max = this.options.max ?? PROPOSAL_STORE_MAX;
+    let unresolved = 0;
+    for (const p of this.items.values()) if (p.status === "pending" || p.status === "executing") unresolved += 1;
+    if (unresolved + count > max) {
+      throw new ProposalError("The demo's approval queue is full of proposals waiting for a decision. Approve or reject some, or try again later.", "store_full");
+    }
+  }
+
   propose<P>(kind: ProposalKind, title: string, payload: P, opts: ProposeOptions): Proposal<P> {
     if (!opts.owner) throw new Error("a proposal needs an owner session");
+    this.assertRoom(1, opts.address);
+    this.makeRoom();
     const now = this.options.now?.() ?? new Date();
     const proposal: Proposal<P> = {
       id: this.options.newId?.() ?? `prop_${randomUUID()}`,
       owner: opts.owner,
+      ...(opts.address ? { address: opts.address } : {}),
       kind,
       title,
       payload: deepFreeze(structuredClone(payload)),
@@ -133,7 +205,6 @@ export class ProposalStore {
       createdAt: now.toISOString(),
     };
     this.items.set(proposal.id, proposal as Proposal);
-    this.evict();
     return proposal;
   }
 
@@ -150,6 +221,7 @@ export class ProposalStore {
 
   /** The owner's proposals, newest first. */
   list(filter: { owner: string; status?: ProposalStatus }): Proposal[] {
+    this.expire();
     return [...this.items.values()].reverse().filter((p) => p.owner === filter.owner && (!filter.status || p.status === filter.status));
   }
 
@@ -179,22 +251,10 @@ export class ProposalStore {
   }
 
   private pending(id: string, owner: string): Proposal {
+    this.expire();
     const p = this.get(id, owner);
     if (!p) throw new ProposalError(`proposal ${id} not found`, "not_found");
     if (p.status !== "pending") throw new ProposalError(`proposal ${id} is ${p.status}, not pending`, "not_pending");
     return p;
-  }
-
-  private evict(): void {
-    const max = this.options.max ?? 500;
-    if (this.items.size <= max) return;
-    for (const [id, p] of this.items) {
-      if (this.items.size <= max) break;
-      if (p.status !== "pending" && p.status !== "executing") this.items.delete(id);
-    }
-    for (const [id, p] of this.items) {
-      if (this.items.size <= max) break;
-      if (p.status !== "executing") this.items.delete(id);
-    }
   }
 }

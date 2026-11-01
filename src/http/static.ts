@@ -60,12 +60,20 @@ export function serveStatic(root: string | undefined, pathname: string, res: Ser
   createReadStream(file).pipe(res);
 }
 
-/** Page PayPal sends the buyer to after approving or cancelling a payment link. */
-export function paypalReturnPage(kind: "return" | "cancel"): string {
-  const msg =
-    kind === "return"
-      ? "Thank you! Your payment was approved in PayPal. The seller will confirm it and ship your item."
-      : "The payment was cancelled. No money was taken. You can use the link again if you change your mind.";
+export type ReturnOutcome = "approved" | "completed" | "not_approved" | "unknown_order" | "check_failed" | "cancel";
+
+const RETURN_TEXT: Record<ReturnOutcome, [string, string]> = {
+  approved: ["Payment approved", "Thank you! PayPal confirms that you approved the payment. The seller will confirm it and ship your item."],
+  completed: ["Payment complete", "This payment has already been completed. Thank you!"],
+  not_approved: ["Payment not approved yet", "PayPal does not show this payment as approved yet. If you meant to pay, please open the payment link again."],
+  unknown_order: ["Payment not found", "We could not find this payment. If you paid with a link from the seller, please contact the seller."],
+  check_failed: ["We could not check your payment", "PayPal could not be reached to confirm this payment. Nothing else is needed from you now; the seller will check it in PayPal."],
+  cancel: ["Payment cancelled", "The payment was cancelled. No money was taken. You can use the link again if you change your mind."],
+};
+
+/** Page PayPal sends the buyer to after approving or cancelling a payment link. Fixed texts only. */
+export function paypalReturnPage(outcome: ReturnOutcome): string {
+  const [title, msg] = RETURN_TEXT[outcome];
   return `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Okuri</title>
-<body style="font-family:sans-serif;max-width:36rem;margin:3rem auto;padding:0 1rem"><h1>${kind === "return" ? "Payment approved" : "Payment cancelled"}</h1><p>${msg}</p></body></html>`;
+<body style="font-family:sans-serif;max-width:36rem;margin:3rem auto;padding:0 1rem"><h1>${title}</h1><p>${msg}</p></body></html>`;
 }

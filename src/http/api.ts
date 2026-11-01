@@ -22,6 +22,7 @@ import type { ReminderLedger } from "../proposals/reminder-ledger.js";
 import { PROPOSAL_STATUSES, type Proposal, type ProposalKind, type ProposalStatus, type ProposalStore } from "../proposals/store.js";
 import { clientAddress, limitKey } from "./client-address.js";
 import { disputeDetail, disputeRow, invoiceDetail, invoiceRow, orderView, publicPack, publicProposal as toPublic } from "./dto.js";
+import { queueCapture } from "./paypal-return.js";
 import { ensureSession, isSecureRequest } from "./session.js";
 import { HttpError, ok, readJsonBody } from "./util.js";
 
@@ -70,7 +71,7 @@ function publicProposal(ctx: Ctx, p: Proposal) {
 
 /** Creates a proposal owned by the caller's session. */
 function propose<P>(ctx: Ctx, kind: ProposalKind, title: string, payload: P, copyForDm?: string): Proposal<P> {
-  return ctx.deps.proposals.propose(kind, title, payload, { owner: ctx.session, ...(copyForDm ? { copyForDm } : {}) });
+  return ctx.deps.proposals.propose(kind, title, payload, { owner: ctx.session, address: limitKey(ctx.address), ...(copyForDm ? { copyForDm } : {}) });
 }
 
 /** Resolves a buyer alias, or explains which aliases exist. */
@@ -244,6 +245,7 @@ const ROUTES: Route[] = [
           item_names: (inv.items ?? []).map((i) => i.name).slice(0, 20),
         }));
       const { reminders, generated_by } = await deps.agent.nudgeUnpaid(unpaid);
+      if (unpaid.length) deps.proposals.assertRoom(unpaid.length, limitKey(ctx.address));
       const numbers = new Map(unpaid.map((u) => [u.invoice_id, u.invoice_number]));
       const proposals = reminders.map((r) =>
         propose(ctx, "send_invoice_reminder", `Send PayPal's standard reminder for invoice ${numbers.get(r.invoice_id) ?? r.invoice_id}`, r.payload, r.copy_for_dm),
@@ -267,14 +269,15 @@ const ROUTES: Route[] = [
     handler: async (ctx) => {
       const { req, res, deps, params } = ctx;
       await readJsonBody(req, MAX_API_BODY);
-      requirePayPal(deps);
+      const paypal = requirePayPal(deps);
       const orderId = params[0]!;
       const known = deps.orders.get(orderId);
       if (!known || known.owner !== ctx.session) {
         throw new HttpError(404, "order_not_found", "Only payment links created in your demo session can be captured here.");
       }
-      const proposal = propose(ctx, "capture_order", `Capture payment for order ${orderId}`, { orderId });
-      known.captureProposalId = proposal.id;
+      const order = await paypal.getOrder(orderId);
+      if (order.status !== "APPROVED") throw new HttpError(409, "order_not_approved", `PayPal reports this order as ${order.status}; it can be captured only after the buyer approves it.`);
+      const proposal = queueCapture(deps, orderId)!;
       ok(res, { proposal: publicProposal(ctx, proposal) }, 201);
     },
   },
@@ -457,6 +460,7 @@ const ROUTES: Route[] = [
           agentConfig: { fxJpyPerUsd: deps.settings.fxJpyPerUsd, maxOutputTokens: deps.settings.aiMaxOutputTokens, publicBaseUrl: deps.settings.publicBaseUrl, ...(deps.settings.sellerBusinessName ? { sellerBusinessName: deps.settings.sellerBusinessName } : {}) },
           paymentPath: deps.settings.paymentPath,
           sessionId: session,
+          address: limitKey(ctx.address),
           buyers: deps.buyers,
           reminders: deps.reminders,
         },

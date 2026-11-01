@@ -81,6 +81,53 @@ describe("ProposalStore (approval gate)", () => {
   });
 });
 
+describe("ProposalStore capacity (F4)", () => {
+  it("refuses new proposals when full of pending ones instead of evicting them", () => {
+    const store = new ProposalStore(async () => undefined, { max: 3 });
+    const kept = [1, 2, 3].map((i) => store.propose("capture_order", `c${i}`, { orderId: `O${i}` }, ME));
+    expect(() => store.propose("capture_order", "c4", { orderId: "O4" }, ME)).toThrow(expect.objectContaining({ code: "store_full" }));
+    for (const p of kept) expect(store.get(p.id, ME.owner)?.status).toBe("pending");
+  });
+
+  it("drops the oldest finished proposals to make room, keeping 'unknown' ones longest", async () => {
+    const store = new ProposalStore(
+      async (_k, payload) => {
+        if ((payload as { orderId: string }).orderId === "U") throw new Error("timeout");
+        return "ok";
+      },
+      { max: 3, isUnknownOutcome: () => true },
+    );
+    const unknown = store.propose("capture_order", "u", { orderId: "U" }, ME);
+    await store.approve(unknown.id, ME.owner);
+    const done = store.propose("capture_order", "d", { orderId: "D" }, ME);
+    await store.approve(done.id, ME.owner);
+    const waiting = store.propose("capture_order", "w", { orderId: "W" }, ME);
+    store.propose("capture_order", "new", { orderId: "N" }, ME);
+    expect(store.get(done.id, ME.owner)).toBeUndefined();
+    expect(store.get(unknown.id, ME.owner)?.status).toBe("unknown");
+    expect(store.get(waiting.id, ME.owner)?.status).toBe("pending");
+  });
+
+  it("caps pending proposals per client address", () => {
+    const store = new ProposalStore(async () => undefined, { maxPendingPerAddress: 2 });
+    store.propose("capture_order", "a", {}, { ...ME, address: "203.0.113.7" });
+    store.propose("capture_order", "b", {}, { owner: "other-session", address: "203.0.113.7" });
+    expect(() => store.propose("capture_order", "c", {}, { owner: "third", address: "203.0.113.7" })).toThrow(expect.objectContaining({ code: "too_many_pending" }));
+    expect(store.propose("capture_order", "d", {}, { ...ME, address: "198.51.100.1" }).status).toBe("pending");
+  });
+
+  it("pending proposals expire after 24 hours and cannot run", async () => {
+    let now = Date.parse("2026-11-01T00:00:00Z");
+    let ran = false;
+    const store = new ProposalStore(async () => void (ran = true), { now: () => new Date(now) });
+    const p = store.propose("capture_order", "c", { orderId: "O" }, ME);
+    now += 24 * 3_600_000 + 1;
+    expect(store.list({ owner: ME.owner })[0]).toMatchObject({ status: "expired", error: { message: expect.stringMatching(/expired/) } });
+    await expect(store.approve(p.id, ME.owner)).rejects.toMatchObject({ code: "not_pending" });
+    expect(ran).toBe(false);
+  });
+});
+
 describe("PayPal executor", () => {
   it("create_and_send_invoice: next number, create draft, then send", async () => {
     const { client, apiCalls } = paypalWith((c) => {

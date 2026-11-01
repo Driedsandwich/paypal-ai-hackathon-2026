@@ -24,6 +24,8 @@ export interface ToolDeps {
   paymentPath: "invoice" | "order";
   /** Demo session of the visitor chatting; proposals created by tools belong to it. */
   sessionId: string;
+  /** Rate-limit key of the visitor (pending-proposal cap). */
+  address?: string;
   /** Recipients by alias (DEMO_BUYER_EMAILS). The model only ever sees aliases. */
   buyers: DemoBuyers;
   /** At most 2 reminders per invoice per day. */
@@ -58,7 +60,7 @@ export function agentTools(deps: ToolDeps): AiToolSpec[] {
   const read = async <T>(fn: (pp: PayPalClient) => Promise<T>) => (paypal ? fn(paypal) : NOT_CONFIGURED);
   const proposals = {
     propose: <P>(kind: ProposalKind, title: string, payload: P, copyForDm?: string) =>
-      deps.proposals.propose(kind, title, payload, { owner: deps.sessionId, ...(copyForDm ? { copyForDm } : {}) }),
+      deps.proposals.propose(kind, title, payload, { owner: deps.sessionId, ...(deps.address ? { address: deps.address } : {}), ...(copyForDm ? { copyForDm } : {}) }),
   };
 
   /** An error for the model when PayPal does not currently allow this dispute action. */

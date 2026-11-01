@@ -75,7 +75,8 @@ export function sendError(res: ServerResponse, err: unknown, log: (msg: string) 
     return sendJson(res, 400, { ok: false, error: { code: "invalid_amount", message: err.message } });
   }
   if (err instanceof ProposalError) {
-    return sendJson(res, err.code === "not_found" ? 404 : 409, { ok: false, error: { code: `proposal_${err.code}`, message: err.message } });
+    const status = { not_found: 404, not_pending: 409, store_full: 503, too_many_pending: 429 }[err.code];
+    return sendJson(res, status, { ok: false, error: { code: `proposal_${err.code}`, message: err.message } }, status === 503 ? { "Retry-After": "60" } : {});
   }
   if (err instanceof PayPalApiError) {
     const status = err.status === 404 ? 404 : err.status === 400 || err.status === 422 ? 422 : 502;

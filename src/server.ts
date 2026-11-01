@@ -8,7 +8,8 @@ import { Agent } from "./agent/tasks.js";
 import { legacySettingWarnings, loadOptionalPayPalConfig, loadSettings, type AppSettings } from "./config.js";
 import { EventLog } from "./events/log.js";
 import { handleApi, healthData, type ApiDeps } from "./http/api.js";
-import { paypalReturnPage, serveStatic } from "./http/static.js";
+import { handlePayPalReturn } from "./http/paypal-return.js";
+import { serveStatic } from "./http/static.js";
 import { readBody, sendError, sendJson } from "./http/util.js";
 import { AiLimiter } from "./limits/rate-limit.js";
 import { PayPalApiError, PayPalClient, PayPalTimeoutError, handlePayPalWebhook, type PayPalConfig } from "./paypal/index.js";
@@ -23,7 +24,6 @@ const MAX_WEBHOOK_BODY = 1024 * 1024;
 /** Node server limits (F8): whole request headers within 20 s, whole request within 30 s. */
 export const HEADERS_TIMEOUT_MS = 20_000;
 export const REQUEST_TIMEOUT_MS = 30_000;
-const ORDER_TOKEN = /^[A-Za-z0-9]{1,36}$/;
 
 export interface AppOptions {
   settings?: AppSettings;
@@ -145,18 +145,7 @@ export function createApp(options: AppOptions = {}): Server {
         return sendJson(res, 404, { ok: false, error: { code: "not_found", message: "Not found" } });
       }
       if (url.pathname === "/paypal/return" || url.pathname === "/paypal/cancel") {
-        const token = url.searchParams.get("token") ?? "";
-        if (url.pathname === "/paypal/return" && deps.paypal && ORDER_TOKEN.test(token)) {
-          // The buyer approved a payment link created here: queue the capture for the seller's
-          // approval, in the session that created the link (the buyer's browser may differ).
-          const known = deps.orders.get(token);
-          const queued = known?.captureProposalId ? deps.proposals.peek(known.captureProposalId) : undefined;
-          if (known && !queued) {
-            known.captureProposalId = deps.proposals.propose("capture_order", `Capture payment for order ${token}`, { orderId: token }, { owner: known.owner }).id;
-          }
-        }
-        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-        return res.end(paypalReturnPage(url.pathname === "/paypal/return" ? "return" : "cancel"));
+        return await handlePayPalReturn(req, res, url, deps);
       }
       return serveStatic(deps.staticDir, url.pathname, res);
     } catch (err) {

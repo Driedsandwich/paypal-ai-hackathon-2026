@@ -53,7 +53,7 @@ export interface Proposal {
   payload: unknown;
   /** AI-written text for the seller to send by DM; never sent to PayPal. */
   copy_for_dm?: string;
-  status: "pending" | "executing" | "executed" | "failed" | "rejected" | "unknown" | "obsolete";
+  status: "pending" | "executing" | "executed" | "failed" | "rejected" | "unknown" | "obsolete" | "expired";
   createdAt: string;
   result?: unknown;
   error?: { message?: string; needsCheck?: boolean; paypal?: ApiErrorBody["paypal"] };

@@ -201,29 +201,77 @@ describe("approval gate over HTTP", () => {
   });
 
   it("order path: prepare proposes a payment link, and the PayPal return page queues a capture for the seller's session", async () => {
-    const pp = sandbox();
+    let orderStatus = "PAYER_ACTION_REQUIRED";
+    const ORDER = "5O190127TN364715T";
+    const pp = sandbox((c) => (c.method === "GET" && c.url === `${SANDBOX}/v2/checkout/orders/${ORDER}` ? { json: { id: ORDER, status: orderStatus } } : undefined));
     const { post, get, other } = await start({ paypalConfig: FAKE_CONFIG, paypal: pp.client, settings: loadSettings({ ...BUYERS, PAYMENT_PATH: "order", PUBLIC_BASE_URL: "https://demo.invalid" }) });
     const prepared = await post("/api/invoices/prepare", { listing: LISTING, buyer: { alias: "Demo buyer 1" } });
     expect(prepared.body.data.path).toBe("order");
     expect(prepared.body.data.proposal.payload.order.payment_source.paypal.experience_context.return_url).toBe("https://demo.invalid/paypal/return");
     const approved = await post(`/api/proposals/${prepared.body.data.proposal.id}/approve`);
-    expect(approved.body.data.result).toEqual({ orderId: "5O190127TN364715T", status: "PAYER_ACTION_REQUIRED", recipient: "Demo buyer 1", payerLink: "https://www.sandbox.paypal.com/checkoutnow?token=5O190127TN364715T" });
+    expect(approved.body.data.result).toEqual({ orderId: ORDER, status: "PAYER_ACTION_REQUIRED", recipient: "Demo buyer 1", payerLink: `https://www.sandbox.paypal.com/checkoutnow?token=${ORDER}` });
     const createOrder = pp.calls.find((c) => c.url === `${SANDBOX}/v2/checkout/orders` && c.method === "POST")!;
     expect(JSON.parse(createOrder.body!).payment_source.paypal.email_address).toBe(fakeEmail("b1"));
+    const captures = async () => (await get("/api/proposals?status=pending")).body.data.filter((p: any) => p.kind === "capture_order");
 
-    // The buyer comes back in a different browser: the capture still goes to the seller's session.
+    // The buyer comes back (maybe in another browser) before approving: no "approved" text, nothing queued.
     const buyer = other();
-    await buyer.get("/paypal/return?token=5O190127TN364715T&PayerID=X");
-    await buyer.get("/paypal/return?token=5O190127TN364715T");
-    expect((await buyer.get("/api/proposals")).body.data).toEqual([]);
-    const captures = (await get("/api/proposals?status=pending")).body.data.filter((p: any) => p.kind === "capture_order");
-    expect(captures.map((p: any) => p.payload)).toEqual([{ orderId: "5O190127TN364715T" }]);
+    expect((await buyer.get(`/paypal/return?token=${ORDER}`)).body).toMatch(/not approved yet/);
+    expect(await captures()).toEqual([]);
 
-    // Order ids this server did not create are ignored.
-    await get("/paypal/return?token=FORGED123");
-    expect((await get("/api/proposals?status=pending")).body.data.filter((p: any) => p.kind === "capture_order")).toHaveLength(1);
-    expect((await post("/api/orders/FORGED123/capture")).status).toBe(404);
-    expect((await buyer.post("/api/orders/5O190127TN364715T/capture")).status).toBe(404);
+    // After approval at PayPal: the capture goes to the seller's session, once.
+    orderStatus = "APPROVED";
+    const page = await buyer.get(`/paypal/return?token=${ORDER}&PayerID=X`);
+    expect(page.body).toMatch(/Payment approved/);
+    await buyer.get(`/paypal/return?token=${ORDER}`);
+    expect((await buyer.get("/api/proposals")).body.data).toEqual([]);
+    expect((await captures()).map((p: any) => p.payload)).toEqual([{ orderId: ORDER }]);
+    // The capture route returns the same proposal instead of a second one.
+    const again = await post(`/api/orders/${ORDER}/capture`);
+    expect(again.body.data.proposal.id).toBe((await captures())[0].id);
+    expect(await captures()).toHaveLength(1);
+    expect((await buyer.post(`/api/orders/${ORDER}/capture`)).status).toBe(404);
+
+    orderStatus = "COMPLETED";
+    expect((await buyer.get(`/paypal/return?token=${ORDER}`)).body).toMatch(/already been completed/);
+  });
+
+  it("the return page ignores unknown order ids and HEAD requests, and never claims approval without PayPal", async () => {
+    const ORDER = "5O190127TN364715T";
+    let failLookup = false;
+    const pp = sandbox((c) => (c.method === "GET" && c.url.startsWith(`${SANDBOX}/v2/checkout/orders/`) ? (failLookup ? { status: 500, json: { name: "INTERNAL_SERVER_ERROR" } } : { json: { id: ORDER, status: "APPROVED" } }) : undefined));
+    const { post, get, head } = await start({ paypalConfig: FAKE_CONFIG, paypal: pp.client, settings: loadSettings({ ...BUYERS, PAYMENT_PATH: "order" }) });
+    const lookups = () => pp.calls.filter((c) => c.method === "GET" && c.url.includes("/v2/checkout/orders/")).length;
+
+    const forged = await get("/paypal/return?token=FORGED123");
+    expect(forged.body).toMatch(/Payment not found/);
+    expect(forged.body).not.toMatch(/approved/i);
+    expect(lookups()).toBe(0);
+    expect((await get("/paypal/return")).body).toMatch(/Payment not found/);
+
+    const p = (await post("/api/invoices/prepare", { listing: LISTING, buyer: { alias: "Demo buyer 1" } })).body.data.proposal;
+    await post(`/api/proposals/${p.id}/approve`);
+    const h = await head(`/paypal/return?token=${ORDER}`);
+    expect(h.status).toBe(200);
+    expect(lookups()).toBe(0);
+    expect((await get("/api/proposals?status=pending")).body.data).toEqual([]);
+
+    failLookup = true;
+    const failed = await get(`/paypal/return?token=${ORDER}`);
+    expect(failed.body).toMatch(/could not check your payment/);
+    expect((await get("/api/proposals?status=pending")).body.data).toEqual([]);
+    expect((await get("/paypal/cancel?token=x")).body).toMatch(/Payment cancelled/);
+  });
+
+  it("the capture route refuses orders that are not APPROVED", async () => {
+    const ORDER = "5O190127TN364715T";
+    const pp = sandbox((c) => (c.method === "GET" && c.url === `${SANDBOX}/v2/checkout/orders/${ORDER}` ? { json: { id: ORDER, status: "CREATED" } } : undefined));
+    const { post } = await start({ paypalConfig: FAKE_CONFIG, paypal: pp.client, settings: loadSettings({ ...BUYERS, PAYMENT_PATH: "order" }) });
+    const p = (await post("/api/invoices/prepare", { listing: LISTING, buyer: { alias: "Demo buyer 1" } })).body.data.proposal;
+    await post(`/api/proposals/${p.id}/approve`);
+    const res = await post(`/api/orders/${ORDER}/capture`);
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe("order_not_approved");
   });
 
   it("failed executions keep PayPal's debug_id for the seller", async () => {
