@@ -125,7 +125,10 @@ cp .env.example .env   # then fill in the values (see below)
 PayPal sandbox preparation:
 
 1. In the PayPal developer dashboard, create a sandbox REST app and copy its client ID and
-   secret into `PAYPAL_CLIENT_ID` / `PAYPAL_CLIENT_SECRET`.
+   secret into `PAYPAL_CLIENT_ID` / `PAYPAL_CLIENT_SECRET`. Tracking for invoice payments
+   (`POST /v1/shipping/trackers-batch`) needs the app's shipping trackers permission (scope
+   `https://uri.paypal.com/services/shipping/trackers/readwrite`); without it PayPal answers 403
+   and the tracking proposal says so.
 2. Note the sandbox **personal** (buyer) account emails and put them in `DEMO_BUYER_EMAILS`.
    Invoices and payment links can only be sent to these accounts (shown as *Demo buyer 1, 2, …*).
 3. Optional: add a webhook for `https://<your-host>/webhooks/paypal` with the events
