@@ -25,7 +25,7 @@ import { DemoBuyers } from "./demo/buyers.js";
 import { ProposalObsoleteError, ProposalPolicyError, ProposalStore } from "./proposals/store.js";
 import { MoneyError } from "./money.js";
 import { SaleRegistry } from "./journeys/sales.js";
-import { DisputeRegistry } from "./journeys/disputes.js";
+import { DisputeRegistry, registerFromWebhook } from "./journeys/disputes.js";
 import { OfflineWorlds, offlineBuyerEmails } from "./journeys/offline-world.js";
 import type { PayPalApi } from "./paypal/offline.js";
 
@@ -186,6 +186,8 @@ export function createApp(options: AppOptions = {}): Server {
               if (logged) {
                 deps.reads.invalidate(); // e.g. an invoice was paid: show it on the next read
                 deps.log(`webhook ${logged.eventType}: ${logged.summary}`);
+                // New cases can be missing from PayPal's dispute list for minutes: remember the id.
+                if (logged.category === "dispute") registerFromWebhook({ reads: deps.reads, disputes: deps.disputes, offline: Boolean(deps.offline) }, deps.paypal, logged.resourceId, deps.log);
               }
             },
             isDuplicate: (id) => deps.events.hasSeen(id),

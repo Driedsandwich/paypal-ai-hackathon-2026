@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import { loadSettings } from "../src/config.js";
-import { DisputeRegistry, knownDisputes, MAX_DISPUTE_READS_BY_ID, parseDisputeId, reduceDispute } from "../src/journeys/disputes.js";
+import { DisputeRegistry, knownDisputes, MAX_DISPUTE_READS_BY_ID, NOT_FOUND_GRACE_MS, parseDisputeId, reduceDispute } from "../src/journeys/disputes.js";
 import { SaleRegistry } from "../src/journeys/sales.js";
 import { PayPalReadCache } from "../src/paypal/read-cache.js";
 import type { Dispute } from "../src/paypal/types.js";
@@ -165,16 +165,21 @@ describe("dispute discovery: list, then registered ids", () => {
     expect((await app.get("/api/disputes")).body.data.disputes.map((d: any) => d.dispute_id)).toEqual([CASE_ID]);
   });
 
-  it("keeps showing registered cases when PayPal's list fails, and drops ids PayPal no longer has", async () => {
+  it("keeps showing registered cases when PayPal's list fails, and drops ids PayPal no longer has (after a grace period)", async () => {
     const state = { listed: false, dispute: FIXTURE as Dispute | undefined, listFails: true };
     const pp = lagging(state);
-    const disputes = new DisputeRegistry();
+    let now = Date.now();
+    const disputes = new DisputeRegistry({ now: () => now });
     disputes.note(CASE_ID, "webhook");
     disputes.note("PP-D-GONE", "webhook");
     const app = await start({ settings: LIVE, paypalConfig: FAKE_CONFIG, paypal: pp.client, disputes });
     const res = (await app.get("/api/disputes")).body.data;
     expect(res.disputes.map((d: any) => d.dispute_id)).toEqual([CASE_ID]);
     expect(res.warnings).toEqual([expect.stringMatching(/dispute list could not be read \(debug_id dbg-list\)/)]);
+    // Just announced: PayPal may not serve it yet, so the id is kept for an hour.
+    expect(disputes.get("PP-D-GONE")).toBeDefined();
+    now += NOT_FOUND_GRACE_MS;
+    await app.get("/api/disputes");
     expect(disputes.get("PP-D-GONE")).toBeUndefined();
     const journeys = (await app.get("/api/journeys")).body.data;
     expect(journeys.journeys[0].dispute).toMatchObject({ dispute_id: CASE_ID });
@@ -220,5 +225,99 @@ describe("dispute discovery: list, then registered ids", () => {
     const other = app.other();
     expect((await other.get("/api/disputes")).body.data.disputes.map((d: any) => d.dispute_id)).not.toContain(id);
     expect((await other.get(`/api/disputes/${id}`)).status).toBe(404);
+  });
+});
+
+describe("dispute discovery: verified webhooks", () => {
+  const HEADERS = {
+    "Content-Type": "application/json",
+    "paypal-auth-algo": "SHA256withRSA",
+    "paypal-cert-url": "https://api.sandbox.paypal.com/v1/notifications/certs/CERT-TEST",
+    "paypal-transmission-id": "TRANSMISSION-TEST-D",
+    "paypal-transmission-sig": "fake-signature",
+    "paypal-transmission-time": "2026-11-01T09:00:00Z",
+  };
+  const event = (id: string, type: string, disputeId: unknown) => ({ id, event_type: type, resource: { dispute_id: disputeId, reason: "MERCHANDISE_OR_SERVICE_NOT_RECEIVED", status: "OPEN" } });
+
+  /** The lagging sandbox plus webhook verification (and an optional failing dispute read). */
+  function sandbox(verification: "SUCCESS" | "FAILURE", state: { dispute: Dispute; readFails?: boolean }) {
+    return paypalWith((c) => {
+      const u = c.url.replace(SANDBOX, "");
+      if (u === "/v1/notifications/verify-webhook-signature") return { json: { verification_status: verification } };
+      if (u.startsWith("/v2/invoicing/invoices?")) return { json: { items: [MARKED_INVOICE] } };
+      if (u.startsWith("/v1/customer/disputes?")) return { json: { items: [] } };
+      if (u === `/v1/customer/disputes/${state.dispute.dispute_id}`) return state.readFails ? { status: 503, json: paypalError("SERVICE_UNAVAILABLE", "dbg-503") } : { json: state.dispute };
+      return undefined;
+    });
+  }
+
+  it("CUSTOMER.DISPUTE.CREATED registers the case, reads it by id and shows it on its journey", async () => {
+    const pp = sandbox("SUCCESS", { dispute: FIXTURE });
+    const disputes = new DisputeRegistry();
+    const app = await start({ settings: LIVE, paypalConfig: FAKE_CONFIG, paypal: pp.client, disputes });
+    const body = JSON.stringify(event("WH-DISPUTE-1", "CUSTOMER.DISPUTE.CREATED", CASE_ID));
+    expect((await app.post("/webhooks/paypal", body, HEADERS)).status).toBe(200);
+    await disputes.idle();
+    // Verified first, then read by id.
+    const paths = pp.apiCalls().map((c) => c.url.replace(SANDBOX, ""));
+    expect(paths.slice(0, 2)).toEqual(["/v1/notifications/verify-webhook-signature", `/v1/customer/disputes/${CASE_ID}`]);
+    expect(disputes.get(CASE_ID)).toMatchObject({ sources: ["webhook"], data: { dispute_id: CASE_ID, disputed_transactions: [{ seller_transaction_id: SELLER_TX }] } });
+
+    // The journey (rebuilt from the invoice marker, as after a restart) shows the case.
+    const journey = (await app.get("/api/journeys")).body.data.journeys.find((j: any) => j.id === "OK-2042");
+    expect(journey.dispute).toMatchObject({ dispute_id: CASE_ID, open: true, in_paypal_list: false });
+    const rows = (await app.get("/api/disputes")).body.data.disputes;
+    expect(rows).toEqual([expect.objectContaining({ dispute_id: CASE_ID, in_paypal_list: false, sources: ["webhook", "by_id"], sale_id: "OK-2042" })]);
+    expect((await app.get("/api/events")).body.data).toEqual([expect.objectContaining({ id: "WH-DISPUTE-1", category: "dispute", resourceId: CASE_ID })]);
+
+    // A redelivery is not verified or read again; an UPDATED event reads the case again.
+    const reads = () => disputeReads(pp.calls).length;
+    const before = reads();
+    expect((await app.post("/webhooks/paypal", body, HEADERS)).status).toBe(200);
+    await disputes.idle();
+    expect(reads()).toBe(before);
+    expect((await app.post("/webhooks/paypal", JSON.stringify(event("WH-DISPUTE-2", "CUSTOMER.DISPUTE.UPDATED", CASE_ID)), HEADERS)).status).toBe(200);
+    await disputes.idle();
+    expect(reads()).toBe(before + 1);
+  });
+
+  it("registers nothing for unverified events or events without a valid case id", async () => {
+    const pp = sandbox("FAILURE", { dispute: FIXTURE });
+    const disputes = new DisputeRegistry();
+    const app = await start({ settings: LIVE, paypalConfig: FAKE_CONFIG, paypal: pp.client, disputes });
+    expect((await app.post("/webhooks/paypal", JSON.stringify(event("WH-FORGED", "CUSTOMER.DISPUTE.CREATED", CASE_ID)), HEADERS)).status).toBe(400);
+    await disputes.idle();
+    expect(disputes.size).toBe(0);
+    expect(disputeReads(pp.calls)).toHaveLength(0);
+
+    const ok = sandbox("SUCCESS", { dispute: FIXTURE });
+    const disputes2 = new DisputeRegistry();
+    await close?.();
+    const app2 = await start({ settings: LIVE, paypalConfig: FAKE_CONFIG, paypal: ok.client, disputes: disputes2 });
+    for (const [i, bad] of ["../../v1/oauth2/token", "INV2-ABCD", 42].entries()) {
+      expect((await app2.post("/webhooks/paypal", JSON.stringify(event(`WH-BAD-${i}`, "CUSTOMER.DISPUTE.CREATED", bad)), HEADERS)).status).toBe(200);
+    }
+    // Other event types never register disputes either.
+    expect((await app2.post("/webhooks/paypal", JSON.stringify({ id: "WH-PAID", event_type: "INVOICING.INVOICE.PAID", resource: { dispute_id: CASE_ID } }), HEADERS)).status).toBe(200);
+    await disputes2.idle();
+    expect(disputes2.size).toBe(0);
+    expect(disputeReads(ok.calls)).toHaveLength(0);
+  });
+
+  it("keeps the id when the read after the webhook fails, and reads it on the next page load", async () => {
+    const state = { dispute: FIXTURE, readFails: true };
+    const pp = sandbox("SUCCESS", state);
+    const logs: string[] = [];
+    const disputes = new DisputeRegistry();
+    const app = await start({ settings: LIVE, paypalConfig: FAKE_CONFIG, paypal: pp.client, disputes, log: (m) => logs.push(m) });
+    expect((await app.post("/webhooks/paypal", JSON.stringify(event("WH-DISPUTE-3", "CUSTOMER.DISPUTE.CREATED", CASE_ID)), HEADERS)).status).toBe(200);
+    await disputes.idle();
+    expect(disputes.get(CASE_ID)).toMatchObject({ sources: ["webhook"] });
+    expect(disputes.get(CASE_ID)?.data).toBeUndefined();
+    expect(logs.join("\n")).toMatch(/read after webhook failed \(503, debug_id dbg-503\)/);
+
+    state.readFails = false;
+    const journey = (await app.get("/api/journeys")).body.data.journeys.find((j: any) => j.id === "OK-2042");
+    expect(journey.dispute).toMatchObject({ dispute_id: CASE_ID });
   });
 });

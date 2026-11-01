@@ -36,6 +36,11 @@ export const DISPUTE_REGISTRY_TTL_MS = 30 * 86_400_000;
 export const DISPUTE_REGISTRY_MAX = 2_000;
 /** Ids not in PayPal's list are read by id, at most this many per page load (newest first). */
 export const MAX_DISPUTE_READS_BY_ID = 10;
+/**
+ * A registered id that PayPal answers 404 for is dropped, but only after this long: a case
+ * announced by a verified webhook may not be readable at once (PayPal's list lags too).
+ */
+export const NOT_FOUND_GRACE_MS = 3_600_000;
 
 /**
  * Case ids as PayPal shows them ("PP-D-27803", "PP-R-EMU-10195761", "PP-000-042-663-135";
@@ -78,7 +83,7 @@ export function reduceDispute(d: Dispute): Dispute {
  */
 export class DisputeRegistry {
   private readonly entries: TtlMap<string, KnownDispute>;
-  private readonly inFlight = new Set<Promise<unknown>>();
+  private readonly inFlight = new Map<string, Promise<unknown>>();
 
   constructor(private readonly options: { ttlMs?: number; max?: number; now?: () => number } = {}) {
     this.entries = new TtlMap({ ttlMs: options.ttlMs ?? DISPUTE_REGISTRY_TTL_MS, max: options.max ?? DISPUTE_REGISTRY_MAX, ...(options.now ? { now: options.now } : {}) });
@@ -117,6 +122,12 @@ export class DisputeRegistry {
     this.entries.delete(id);
   }
 
+  /** PayPal says 404: forget the id unless it was registered within NOT_FOUND_GRACE_MS. */
+  notFound(id: string): void {
+    const e = this.entries.get(id);
+    if (e && (this.options.now?.() ?? Date.now()) - Date.parse(e.firstSeen) >= NOT_FOUND_GRACE_MS) this.entries.delete(id);
+  }
+
   /** Newest first. */
   all(): KnownDispute[] {
     return this.entries.values().reverse();
@@ -126,16 +137,23 @@ export class DisputeRegistry {
     return this.entries.size;
   }
 
-  /** Keeps track of background work (webhook follow-up reads) so tests can wait for it. */
-  track<T>(p: Promise<T>): Promise<T> {
-    this.inFlight.add(p);
-    void p.finally(() => this.inFlight.delete(p)).catch(() => {});
+  /**
+   * Runs one background read per dispute id at a time (webhook follow-ups; a second event for
+   * the same id while the first read runs shares it). Never rejects.
+   */
+  background(id: string, work: () => Promise<unknown>): Promise<unknown> {
+    const running = this.inFlight.get(id);
+    if (running) return running;
+    const p = work()
+      .catch(() => undefined)
+      .finally(() => this.inFlight.delete(id));
+    this.inFlight.set(id, p);
     return p;
   }
 
-  /** Resolves when no background read is running. */
+  /** Resolves when no background read is running (for tests and shutdown). */
   async idle(): Promise<void> {
-    while (this.inFlight.size) await Promise.allSettled([...this.inFlight]);
+    while (this.inFlight.size) await Promise.allSettled([...this.inFlight.values()]);
   }
 }
 
@@ -202,7 +220,7 @@ export async function knownDisputes(deps: KnownDisputesDeps, paypal: PayPalApi):
           return { dispute: d, detailed: true, inList: false, sources: [...entry.sources] };
         } catch (err) {
           if (err instanceof PayPalApiError && err.status === 404) {
-            deps.disputes.remove(e.id);
+            deps.disputes.notFound(e.id);
             return undefined;
           }
         }
@@ -224,4 +242,23 @@ export async function readAndRegister(deps: KnownDisputesDeps, paypal: PayPalApi
   const d = await paypal.getDispute(id);
   if (!deps.offline && d?.dispute_id) deps.disputes.note(d.dispute_id, source, d, true);
   return d;
+}
+
+/**
+ * After a verified CUSTOMER.DISPUTE.CREATED / UPDATED webhook: registers the id at once, then
+ * reads the dispute by id in the background (the webhook answer does not wait for PayPal). If
+ * that read fails, the id stays registered and the next page load reads it.
+ */
+export function registerFromWebhook(deps: KnownDisputesDeps, paypal: PayPalApi | undefined, rawId: unknown, log: (msg: string) => void = () => {}): string | undefined {
+  const id = parseDisputeId(rawId);
+  if (!id || !paypal || deps.offline) return undefined;
+  deps.disputes.note(id, "webhook");
+  void deps.disputes.background(id, async () => {
+    try {
+      await readAndRegister(deps, paypal, id, "webhook");
+    } catch (err) {
+      log(`dispute ${id}: read after webhook failed${err instanceof PayPalApiError ? ` (${err.status}, debug_id ${err.debugId ?? "-"})` : ""}; it will be read on the next page load`);
+    }
+  });
+  return id;
 }
