@@ -1,11 +1,235 @@
+import { useMemo } from "react";
+import { AgStudio } from "ag-studio-react";
+import { AgStudioLicenseManager, studioTheme } from "ag-studio";
+import { money, type Journey } from "../api";
 import type { ViewProps } from "../App";
 
-/** Placeholder; replaced by the AG Studio dashboard. */
-export function InsightsView({ data }: ViewProps) {
+// Insights with AG Studio (AG Grid's embedded analytics): revenue by buyer country, unpaid
+// invoices and the dispute rate, computed in the browser from the sales on this demo. A
+// pre-built report in view mode; the A1 tokens are passed to AG Studio's theming API.
+// AG Studio has no map widget, so "where buyers are" (S4) is a bar chart plus a country ledger.
+
+const INK = "#252522";
+const INK_2 = "#666259";
+const RULE = "#D6CEBE";
+const BG = "#F6F1E7";
+const PAPER = "#FFFCF6";
+const ACCENT = "#B43F31";
+const UI_FONT = '"Noto Sans JP", sans-serif';
+const TITLE_FONT = '"Noto Serif JP", serif';
+
+let licenseApplied = false;
+function applyLicense(key: string | undefined): void {
+  if (licenseApplied || !key) return;
+  AgStudioLicenseManager.setLicenseKey(key);
+  licenseApplied = true;
+}
+
+interface Row {
+  sale: string;
+  country: string;
+  revenue_usd: number;
+  unpaid_usd: number;
+  days_outstanding: number;
+  disputed: number;
+  paid: number;
+  invoice: string;
+  item: string;
+}
+
+/** One row per USD sale (other currencies are left out of the USD totals). */
+export function insightRows(journeys: Journey[], now = Date.now()): Row[] {
+  return journeys
+    .filter((j) => j.amount?.currency_code === "USD")
+    .map((j) => {
+      const paid = j.stage === "paid" || j.stage === "shipped" || j.stage === "delivered";
+      const billed = j.stage !== "draft";
+      const value = Number(j.amount!.value);
+      return {
+        sale: j.id,
+        country: j.country_name,
+        revenue_usd: paid ? value : 0,
+        unpaid_usd: billed && !paid ? value : 0,
+        days_outstanding: billed && !paid ? Math.max(0, Math.floor((now - Date.parse(j.created_at)) / 86_400_000)) : 0,
+        disputed: j.dispute ? 1 : 0,
+        paid: paid ? 1 : 0,
+        invoice: j.invoice_number ?? j.id,
+        item: j.title_en,
+      };
+    });
+}
+
+const usd = { format: new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }) };
+const title = (text: string) => ({ enabled: true, text, typography: { fontFamily: TITLE_FONT, fontSize: 18, fontWeight: 700 }, color: INK });
+
+function studioData(rows: Row[]) {
+  return {
+    sources: [
+      {
+        id: "sales",
+        data: rows,
+        fields: [
+          { id: "sale", name: "Sale", format: "textFormat" },
+          { id: "invoice", name: "Invoice", format: "textFormat" },
+          { id: "item", name: "Item", format: "textFormat" },
+          { id: "country", name: "Country", format: "textFormat" },
+          { id: "revenue_usd", name: "Revenue", format: "currencyFormat", formatOptions: usd },
+          { id: "unpaid_usd", name: "Unpaid", format: "currencyFormat", formatOptions: usd },
+          { id: "days_outstanding", name: "Days open", format: "integerFormat" },
+          { id: "disputed", name: "Disputes", format: "integerFormat" },
+          { id: "paid", name: "Paid sales", format: "integerFormat" },
+        ],
+      },
+    ],
+    expressions: [
+      {
+        id: "dispute_rate",
+        name: "Dispute rate",
+        isMeasure: true,
+        format: "percentageFormat",
+        formatOptions: { format: "0.0%" },
+        expression: { operator: "divide", inputs: [{ id: "sales.disputed", aggregation: "sum" }, { id: "sales.paid", aggregation: "sum" }] },
+      },
+    ],
+  };
+}
+
+const INITIAL_STATE = {
+  selectedPageId: "insights",
+  pages: [
+    {
+      id: "insights",
+      widgets: {
+        revenue: {
+          type: "bar-chart-grouped",
+          dataMapping: { categoryKey: [{ id: "sales.country" }], valueKey: [{ id: "sales.revenue_usd", aggregation: "sum" }] },
+          format: { title: title("Revenue by buyer country (USD, paid)"), style: { theme: { common: { legend: { enabled: false } } } } },
+        },
+        unpaid: {
+          type: "grid",
+          dataMapping: { cols: [{ id: "sales.invoice" }, { id: "sales.country" }, { id: "sales.unpaid_usd" }, { id: "sales.days_outstanding" }] },
+          format: { title: title("Unpaid invoices") },
+        },
+        rate: {
+          type: "value",
+          dataMapping: { value: [{ id: "dispute_rate" }] },
+          format: { title: title("Dispute rate"), style: { color: ACCENT, typography: { fontFamily: TITLE_FONT } } },
+        },
+        ledger: {
+          type: "grid",
+          dataMapping: {
+            cols: [
+              { id: "sales.country" },
+              { id: "sales.revenue_usd", aggregation: "sum" },
+              { id: "sales.unpaid_usd", aggregation: "sum" },
+              { id: "sales.disputed", aggregation: "sum" },
+            ],
+          },
+          format: { title: title("By country") },
+        },
+      },
+      widgetLayout: {
+        revenue: { xTrack: 0, yTrack: 0, xSpan: 10, ySpan: 18 },
+        unpaid: { xTrack: 10, yTrack: 0, xSpan: 8, ySpan: 18 },
+        rate: { xTrack: 18, yTrack: 0, xSpan: 6, ySpan: 18 },
+        ledger: { xTrack: 0, yTrack: 18, xSpan: 24, ySpan: 15 },
+      },
+      filter: {
+        widget: {
+          revenue: [{ field: { id: "sales.revenue_usd" }, model: { operator: "greaterThan", value: 0 } }],
+          unpaid: [{ field: { id: "sales.unpaid_usd" }, model: { operator: "greaterThan", value: 0 } }],
+        },
+      },
+    },
+  ],
+};
+
+const THEME = studioTheme.withParams({
+  backgroundColor: BG,
+  foregroundColor: INK,
+  textColor: INK,
+  subtleTextColor: INK_2,
+  borderColor: RULE,
+  accentColor: ACCENT,
+  borderRadius: 2,
+  fontFamily: UI_FONT,
+  studioWrapperBorder: false,
+  studioCanvasBorder: false,
+  studioWrapperBackgroundColor: BG,
+  studioCanvasBackgroundColor: BG,
+  studioCanvasFontFamily: UI_FONT,
+  studioWidgetBackgroundColor: PAPER,
+  studioWidgetBorder: { width: 1, color: RULE },
+  studioWidgetBorderRadius: 3,
+  studioWidgetTitleFontFamily: TITLE_FONT,
+  studioWidgetTitleFontSize: 18,
+  studioWidgetTitleTextColor: INK,
+  studioWidgetSubtitleTextColor: INK_2,
+  studioWidgetCaptionTextColor: INK_2,
+  studioValueWidgetFontSize: 56,
+  gridFontFamily: UI_FONT,
+  gridHeaderFontFamily: UI_FONT,
+  gridCellFontFamily: UI_FONT,
+  gridHeaderTextColor: INK_2,
+  gridCellTextColor: INK,
+  gridHeaderBackgroundColor: PAPER,
+  gridDataBackgroundColor: PAPER,
+  gridOddRowBackgroundColor: PAPER,
+  gridRowBorder: { width: 1, color: RULE },
+  gridHeaderRowBorder: { width: 1, color: RULE },
+  gridWrapperBorder: false,
+  gridWrapperBorderRadius: 2,
+  gridAccentColor: ACCENT,
+  chartFontFamily: UI_FONT,
+  chartTextColor: INK,
+  chartSubtleTextColor: INK_2,
+  chartAxisLineColor: RULE,
+  chartGridLineColor: RULE,
+  chartAccentColor: ACCENT,
+  chartPaletteFills1Color: ACCENT,
+  chartPaletteStrokes1Color: ACCENT,
+} as never);
+
+export function InsightsView({ health, data, dataError }: ViewProps) {
+  applyLicense(health.agStudio.licenseKey);
+  const rows = useMemo(() => insightRows(data?.journeys ?? []), [data]);
+  const studio = useMemo(() => studioData(rows), [rows]);
+  const paid = rows.reduce((n, r) => n + r.paid, 0);
+  const disputed = rows.reduce((n, r) => n + r.disputed, 0);
+  const revenue = rows.reduce((n, r) => n + r.revenue_usd, 0);
+  const unpaid = rows.reduce((n, r) => n + r.unpaid_usd, 0);
+
   return (
-    <div className="form-page">
-      <header className="page-head"><h1 className="serif">Insights</h1></header>
-      <p className="muted">{data?.journeys.length ?? 0} sales.</p>
+    <div className="insights">
+      <header className="page-head">
+        <h1 className="serif">Insights</h1>
+        <p className="muted">From the sales on this demo ({rows.length} in USD). Built with AG Studio{health.agStudio.licensed ? "" : " (trial: no AG_STUDIO_LICENSE set)"}.</p>
+      </header>
+      {/* Plain summary first: readable on any screen and for screen readers. */}
+      <dl className="insight-summary">
+        <div><dt>Paid revenue</dt><dd className="serif">{money({ currency_code: "USD", value: revenue.toFixed(2) })}</dd></div>
+        <div><dt>Unpaid</dt><dd className="serif">{money({ currency_code: "USD", value: unpaid.toFixed(2) })}</dd></div>
+        <div><dt>Dispute rate</dt><dd className="serif accent">{paid ? `${((disputed / paid) * 100).toFixed(1)}%` : "–"}</dd><dd className="muted small">{disputed} of {paid} paid sales</dd></div>
+      </dl>
+      {dataError ? <p className="empty-note">The sales could not be loaded.</p> : null}
+      {!data && !dataError && <p className="loading" aria-busy="true">Loading…</p>}
+      {data && rows.length === 0 && <p className="empty-note">No data yet. Insights appear once a sale has an invoice.</p>}
+      {data && rows.length > 0 && (
+        <div className="studio-scroll">
+          <div className="studio-frame">
+            <AgStudio
+              key={rows.length}
+              style={{ height: "100%", width: "100%" }}
+              mode="view"
+              data={studio as never}
+              initialState={INITIAL_STATE as never}
+              theme={THEME}
+              panels={{ view: { left: [], right: [] } }}
+              layout={{ backgroundColor: BG, widgetBackgroundColor: PAPER, widgetBorderColor: RULE, widgetBorderRadius: 3 } as never}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }

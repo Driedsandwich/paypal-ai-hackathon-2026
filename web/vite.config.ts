@@ -7,6 +7,7 @@ import { defineConfig } from "vite";
 export default defineConfig({
   root: fileURLToPath(new URL(".", import.meta.url)),
   plugins: [react()],
-  build: { outDir: fileURLToPath(new URL("../dist/public", import.meta.url)), emptyOutDir: true },
+  // AG Studio (Insights) is one ~5 MB chunk, loaded only when Insights opens.
+  build: { outDir: fileURLToPath(new URL("../dist/public", import.meta.url)), emptyOutDir: true, chunkSizeWarningLimit: 6000 },
   server: { proxy: { "/api": "http://localhost:3000", "/paypal": "http://localhost:3000" } },
 });

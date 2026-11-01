@@ -23,6 +23,8 @@ export interface AppSettings {
   sellerBusinessName: string | undefined;
   demoBuyerEmails: string[];
   agStudioLicensed: boolean;
+  /** AG Studio licence key (AG_STUDIO_LICENSE). A browser licence: it is sent to the UI. */
+  agStudioLicenseKey: string | undefined;
   /**
    * Number of trusted proxies in front of the app (TRUST_PROXY_HOPS). 0 = use the socket
    * address; N = use the N-th X-Forwarded-For entry from the right (1 on Render).
@@ -108,6 +110,7 @@ export function loadSettings(env: NodeJS.ProcessEnv = process.env): AppSettings 
       .map((s) => s.trim())
       .filter(Boolean),
     agStudioLicensed: (env.AG_STUDIO_LICENSE ?? "").trim() !== "",
+    agStudioLicenseKey: (env.AG_STUDIO_LICENSE ?? "").trim() || undefined,
     trustProxyHops: num(env, "TRUST_PROXY_HOPS", 0, 0, 10, true),
     maxConcurrentRequests: num(env, "MAX_CONCURRENT_REQUESTS", 20, 1, 10_000, true),
     proposalRateLimit: num(env, "PROPOSAL_RATE_LIMIT", 20, 1, 10_000, true),

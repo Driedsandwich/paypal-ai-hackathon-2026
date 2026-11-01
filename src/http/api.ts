@@ -194,7 +194,8 @@ export function healthData(deps: ApiDeps) {
       countsModelCalls: true,
     },
     demo: { notice: DEMO_NOTICE, buyerEmailsConfigured: deps.buyers.size, buyers: deps.buyers.publicList() },
-    agStudio: { licensed: deps.settings.agStudioLicensed },
+    // AG Studio runs in the browser, so its licence key has to reach the browser (like AG Grid keys).
+    agStudio: { licensed: deps.settings.agStudioLicensed, ...(deps.settings.agStudioLicenseKey ? { licenseKey: deps.settings.agStudioLicenseKey } : {}) },
     banner: bannerMessages(deps),
   };
 }

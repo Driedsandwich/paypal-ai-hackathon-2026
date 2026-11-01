@@ -31,6 +31,8 @@
     "@ai-sdk/openai": "3.0.135",
     "@fontsource/noto-sans-jp": "5.3.1",
     "@fontsource/noto-serif-jp": "5.3.1",
+    "ag-studio": "3.0.0",
+    "ag-studio-react": "3.0.0",
     "ai": "6.0.320",
     "react": "19.3.1",
     "react-dom": "19.3.1",
