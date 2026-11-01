@@ -30,6 +30,10 @@ describe("AI setup at startup", () => {
     expect(setup.ai.name).toBe("anthropic");
     expect(setup.fallback).toBeUndefined();
     expect(setup.warnings).toEqual({ fallback: expect.stringMatching(/AI_FALLBACK_API_KEY is empty, so there is no fallback/) });
+    // A blank fallback key counts as missing too.
+    const blank = createAiSetupFromEnv({ AI_PROVIDER: "anthropic", AI_API_KEY: "fake-key", AI_FALLBACK_PROVIDER: "google", AI_FALLBACK_API_KEY: "  " });
+    expect(blank.fallback).toBeUndefined();
+    expect(blank.warnings.fallback).toMatch(/AI_FALLBACK_API_KEY is empty/);
   });
 
   it("both keys set: primary and fallback, no warnings; offline AI needs no key", () => {

@@ -64,7 +64,7 @@ export function createFallbackProviderFromEnv(env: NodeJS.ProcessEnv = process.e
   if (!raw) return {};
   const name = parseAiProviderName(raw);
   if (name === "fake") return { provider: new FakeAiProvider([offlineReply]) };
-  const apiKey = env.AI_FALLBACK_API_KEY ?? "";
+  const apiKey = (env.AI_FALLBACK_API_KEY ?? "").trim();
   if (!apiKey) return { warning: `AI_FALLBACK_PROVIDER=${name} is set but AI_FALLBACK_API_KEY is empty, so there is no fallback.` };
   const modelId = (env.AI_FALLBACK_MODEL ?? "").trim() || DEFAULT_MODELS[name];
   return { provider: sdkProvider(name, apiKey, modelId, maxOutputTokens, AI_FALLBACK_TIMEOUT_MS) };

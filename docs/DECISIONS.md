@@ -430,7 +430,8 @@ approve, PayPal sent the invoice).
     offline AI answers … Set the key and restart." (same banner list as the PayPal notice), and
     `/api/health` `ai` adds `configured: false` and `warnings`. Only the fallback key missing →
     the primary runs without a fallback and `ai.warnings` says so (no banner: answers still come
-    from the real model). Both lines are logged at startup. An unknown `AI_PROVIDER` value still
+    from the real model). Blank (spaces only) keys count as missing for both. Both lines are
+    logged at startup. An unknown `AI_PROVIDER` value still
     stops the server (a typo should be fixed, not hidden). `createAiProviderFromEnv` keeps
     throwing for direct callers. No new env names.
 68. **Seller actions only from what PayPal offers (supersedes the accept-claim part of 38).**
