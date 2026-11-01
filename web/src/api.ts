@@ -51,10 +51,10 @@ export interface Proposal {
   kind: string;
   title: string;
   payload: unknown;
-  status: "pending" | "executing" | "executed" | "failed" | "rejected";
+  status: "pending" | "executing" | "executed" | "failed" | "rejected" | "unknown" | "obsolete";
   createdAt: string;
   result?: unknown;
-  error?: { message?: string; paypal?: ApiErrorBody["paypal"] };
+  error?: { message?: string; needsCheck?: boolean; paypal?: ApiErrorBody["paypal"] };
 }
 
 export interface Money {

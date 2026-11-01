@@ -11,11 +11,15 @@ import { handleApi, healthData, type ApiDeps } from "./http/api.js";
 import { paypalReturnPage, serveStatic } from "./http/static.js";
 import { readBody, sendError, sendJson } from "./http/util.js";
 import { AiLimiter } from "./limits/rate-limit.js";
-import { PayPalApiError, PayPalClient, handlePayPalWebhook, type PayPalConfig } from "./paypal/index.js";
+import { PayPalApiError, PayPalClient, PayPalTimeoutError, handlePayPalWebhook, type PayPalConfig } from "./paypal/index.js";
 import { createPayPalExecutor } from "./proposals/actions.js";
-import { ProposalStore } from "./proposals/store.js";
+import { ProposalObsoleteError, ProposalPolicyError, ProposalStore } from "./proposals/store.js";
+import { MoneyError } from "./money.js";
 
 const MAX_WEBHOOK_BODY = 1024 * 1024;
+/** Node server limits (F8): whole request headers within 20 s, whole request within 30 s. */
+export const HEADERS_TIMEOUT_MS = 20_000;
+export const REQUEST_TIMEOUT_MS = 30_000;
 const ORDER_TOKEN = /^[A-Za-z0-9]{1,36}$/;
 
 export interface AppOptions {
@@ -32,6 +36,19 @@ export interface AppOptions {
   log?: (msg: string) => void;
 }
 
+/** What a visitor may see about a failed execution: no free-form internal messages. */
+export function describeExecutionError(err: unknown, log: (msg: string) => void = () => {}): Record<string, unknown> {
+  if (err instanceof PayPalApiError) return { message: "PayPal could not complete the request", paypal: err.toSafeJSON() };
+  if (err instanceof PayPalTimeoutError) {
+    return err.write
+      ? { message: `${err.message}. The action may or may not have happened: check the PayPal sandbox before preparing it again.`, needsCheck: true }
+      : { message: `${err.message}. Nothing was changed at PayPal; you can try again.` };
+  }
+  if (err instanceof ProposalObsoleteError || err instanceof ProposalPolicyError || err instanceof MoneyError) return { message: err.message };
+  log(`execution error: ${err instanceof Error ? `${err.name}: ${err.message}` : String(err)}`);
+  return { message: "The action could not be completed (internal error)." };
+}
+
 /** Wires dependencies with safe defaults (offline AI, no PayPal). */
 export function buildDeps(options: AppOptions = {}): ApiDeps & { log: (msg: string) => void; staticDir: string | undefined } {
   const settings = options.settings ?? loadSettings({});
@@ -45,7 +62,7 @@ export function buildDeps(options: AppOptions = {}): ApiDeps & { log: (msg: stri
         if (!paypal) throw new Error("PayPal is not configured");
         return paypal;
       }),
-      { describeError: (err) => (err instanceof PayPalApiError ? { message: "PayPal could not complete the request", paypal: err.toSafeJSON() } : { message: err instanceof Error ? err.message : String(err) }) },
+      { describeError: (err) => describeExecutionError(err, log), isUnknownOutcome: (err) => err instanceof PayPalTimeoutError && err.write },
     );
   return {
     settings,
@@ -71,11 +88,21 @@ export function buildDeps(options: AppOptions = {}): ApiDeps & { log: (msg: stri
 /** HTTP app on node:http: JSON API under /api, PayPal webhook, payment-link return pages, static UI. */
 export function createApp(options: AppOptions = {}): Server {
   const deps = buildDeps(options);
-  return createServer(async (req, res) => {
+  let inFlight = 0;
+  const server = createServer(async (req, res) => {
+    let counted = false;
     try {
       const url = new URL(req.url ?? "/", "http://localhost");
-      if (url.pathname === "/health" && req.method === "GET") {
+      if ((url.pathname === "/health" || url.pathname === "/api/health") && req.method === "GET") {
         return sendJson(res, 200, { ok: true, data: healthData(deps) });
+      }
+      // Admission limit for work that can wait on PayPal or the AI model (F8).
+      if (url.pathname.startsWith("/api/") || url.pathname === "/webhooks/paypal" || url.pathname === "/paypal/return") {
+        if (inFlight >= deps.settings.maxConcurrentRequests) {
+          return sendJson(res, 503, { ok: false, error: { code: "server_busy", message: "The demo server is busy. Please try again in a few seconds." } }, { "Retry-After": "2" });
+        }
+        inFlight += 1;
+        counted = true;
       }
       if (url.pathname === "/webhooks/paypal") {
         if (req.method !== "POST") return sendJson(res, 405, { ok: false, error: { code: "method_not_allowed", message: "Use POST" } }, { Allow: "POST" });
@@ -117,8 +144,13 @@ export function createApp(options: AppOptions = {}): Server {
       return serveStatic(deps.staticDir, url.pathname, res);
     } catch (err) {
       return sendError(res, err, deps.log);
+    } finally {
+      if (counted) inFlight -= 1;
     }
   });
+  server.headersTimeout = HEADERS_TIMEOUT_MS;
+  server.requestTimeout = REQUEST_TIMEOUT_MS;
+  return server;
 }
 
 /** Reads live sandbox state once at startup so problems with credentials show up in the log. */

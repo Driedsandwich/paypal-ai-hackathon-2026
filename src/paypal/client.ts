@@ -33,6 +33,35 @@ export interface PayPalClientOptions {
   tokenSafetyMarginSeconds?: number;
   /** Injected for tests. Generates PayPal-Request-Id values. Default: crypto.randomUUID. */
   newRequestId?: () => string;
+  /** Abort each PayPal call (request and response body) after this many ms. Default: 15000. */
+  timeoutMs?: number;
+}
+
+export const PAYPAL_TIMEOUT_MS = 15_000;
+
+/** POSTs that do not change anything a buyer or the seller would see. */
+const TECHNICAL_POSTS = new Set(["/v1/oauth2/token", "/v1/notifications/verify-webhook-signature", "/v2/invoicing/generate-next-invoice-number"]);
+
+/**
+ * PayPal did not answer in time. For a write (`write: true`) the outcome is unknown: PayPal
+ * may or may not have done it, so it must be checked rather than retried.
+ */
+export class PayPalTimeoutError extends Error {
+  readonly write: boolean;
+
+  constructor(
+    readonly method: string,
+    readonly path: string,
+    readonly timeoutMs: number,
+  ) {
+    super(`PayPal ${method} ${path} did not answer within ${Math.round(timeoutMs / 1000)} seconds`);
+    this.name = "PayPalTimeoutError";
+    this.write = method !== "GET" && !TECHNICAL_POSTS.has(path);
+  }
+}
+
+function isAbort(err: unknown): boolean {
+  return err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError");
 }
 
 /**
@@ -122,6 +151,7 @@ export class PayPalClient {
   private readonly now: () => number;
   private readonly marginMs: number;
   private readonly newRequestId: () => string;
+  private readonly timeoutMs: number;
   private cached: CachedToken | undefined;
   private inFlight: Promise<string> | undefined;
 
@@ -132,6 +162,19 @@ export class PayPalClient {
     this.now = options.now ?? Date.now;
     this.marginMs = (options.tokenSafetyMarginSeconds ?? 60) * 1000;
     this.newRequestId = options.newRequestId ?? randomUUID;
+    this.timeoutMs = options.timeoutMs ?? PAYPAL_TIMEOUT_MS;
+  }
+
+  /** fetch + body read under one deadline; a timeout becomes PayPalTimeoutError. */
+  private async send(method: string, path: string, url: string, init: RequestInit): Promise<{ res: Response; body: unknown }> {
+    const signal = AbortSignal.timeout(this.timeoutMs);
+    try {
+      const res = await this.fetchImpl(url, { ...init, signal });
+      return { res, body: await readJson(res) };
+    } catch (err) {
+      if (isAbort(err) || signal.aborted) throw new PayPalTimeoutError(method, path, this.timeoutMs);
+      throw err;
+    }
   }
 
   /** OAuth 2.0 client credentials. Reuses the token until shortly before it expires. */
@@ -149,7 +192,7 @@ export class PayPalClient {
 
   private async fetchToken(): Promise<string> {
     const basic = Buffer.from(`${this.config.clientId}:${this.config.clientSecret}`).toString("base64");
-    const res = await this.fetchImpl(`${this.baseUrl}/v1/oauth2/token`, {
+    const { res, body } = await this.send("POST", "/v1/oauth2/token", `${this.baseUrl}/v1/oauth2/token`, {
       method: "POST",
       headers: {
         Authorization: `Basic ${basic}`,
@@ -158,7 +201,6 @@ export class PayPalClient {
       },
       body: "grant_type=client_credentials",
     });
-    const body = await readJson(res);
     if (!res.ok) {
       throw new PayPalApiError(
         `PayPal token request failed (${res.status})`,
@@ -375,12 +417,11 @@ export class PayPalClient {
     };
     if (!opts.form) headers["Content-Type"] = "application/json";
     if (opts.requestId) headers["PayPal-Request-Id"] = opts.requestId;
-    const res = await this.fetchImpl(`${this.baseUrl}${path}${queryString(opts.query)}`, {
+    const { res, body: parsed } = await this.send(method, path, `${this.baseUrl}${path}${queryString(opts.query)}`, {
       method,
       headers,
       ...(opts.form ? { body: opts.form } : opts.body === undefined ? {} : { body: JSON.stringify(opts.body) }),
     });
-    const parsed = await readJson(res);
     if (!res.ok) {
       throw new PayPalApiError(
         `PayPal ${method} ${path} failed (${res.status})`,

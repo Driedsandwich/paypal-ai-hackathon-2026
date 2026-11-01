@@ -160,6 +160,7 @@ See `.env.example`. Never commit `.env`. All are optional.
 | `DEMO_BUYER_EMAILS` | Sandbox buyer account emails for *Seed demo data*, comma-separated. |
 | `TRUST_PROXY_HOPS` | Number of trusted proxies in front of the app (default 0 = use the socket address). With N > 0 the client address is the N-th `X-Forwarded-For` entry from the right, validated as an IP (falls back to the socket address). Behind a single platform proxy such as Render, set 1. |
 | `AG_STUDIO_LICENSE` | AG Studio licence for the dashboard (next pass); empty shows a watermark. |
+| `MAX_CONCURRENT_REQUESTS` | Concurrent in-flight API, webhook and return-page requests; more get 503 with `Retry-After` (default 20). |
 | `PORT` | HTTP port (default 3000). |
 
 ## How AI is used

@@ -2,7 +2,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { ZodError } from "zod";
 import { AgentOutputError } from "../agent/json-task.js";
 import { MoneyError } from "../money.js";
-import { PayPalApiError } from "../paypal/client.js";
+import { AiTimeoutError } from "../ai/ai-sdk-provider.js";
+import { PayPalApiError, PayPalTimeoutError } from "../paypal/client.js";
 import { ProposalError } from "../proposals/store.js";
 
 export class HttpError extends Error {
@@ -78,6 +79,13 @@ export function sendError(res: ServerResponse, err: unknown, log: (msg: string) 
     const status = err.status === 404 ? 404 : err.status === 400 || err.status === 422 ? 422 : 502;
     log(`PayPal error ${err.status} debug_id=${err.debugId ?? "-"}`);
     return sendJson(res, status, { ok: false, error: { code: "paypal_error", message: "PayPal could not complete the request", paypal: err.toSafeJSON() } });
+  }
+  if (err instanceof PayPalTimeoutError) {
+    log(`PayPal timeout ${err.method} ${err.path}`);
+    return sendJson(res, 504, { ok: false, error: { code: "paypal_timeout", message: `${err.message}. Please try again.` } });
+  }
+  if (err instanceof AiTimeoutError) {
+    return sendJson(res, 504, { ok: false, error: { code: "ai_timeout", message: `${err.message}. Please try again.` } });
   }
   if (err instanceof AgentOutputError) {
     return sendJson(res, 502, { ok: false, error: { code: "ai_output_invalid", message: err.message, issues: err.issues.slice(0, 10) } });

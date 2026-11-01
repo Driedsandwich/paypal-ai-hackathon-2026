@@ -20,7 +20,34 @@ export const PROPOSAL_KINDS = [
 
 export type ProposalKind = (typeof PROPOSAL_KINDS)[number];
 
-export type ProposalStatus = "pending" | "executing" | "executed" | "failed" | "rejected";
+/**
+ * - unknown: a PayPal write timed out; PayPal may or may not have done it. Needs checking,
+ *   never retried automatically.
+ * - obsolete: right before execution the action was no longer allowed (e.g. the dispute
+ *   moved on); nothing was sent.
+ */
+export type ProposalStatus = "pending" | "executing" | "executed" | "failed" | "rejected" | "unknown" | "obsolete";
+
+export const PROPOSAL_STATUSES: readonly ProposalStatus[] = ["pending", "executing", "executed", "failed", "rejected", "unknown", "obsolete"];
+
+/** Thrown by the executor when the action is no longer allowed; the proposal becomes "obsolete". */
+export class ProposalObsoleteError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ProposalObsoleteError";
+  }
+}
+
+/**
+ * Thrown by the executor when a demo rule refuses the stored action (e.g. a recipient that is
+ * not a demo buyer). The message is meant for the visitor.
+ */
+export class ProposalPolicyError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ProposalPolicyError";
+  }
+}
 
 export interface Proposal<P = unknown> {
   id: string;
@@ -67,6 +94,8 @@ export class ProposalStore {
       newId?: () => string;
       /** Converts an execution error into something safe to show (e.g. PayPal debug_id). */
       describeError?: (err: unknown) => unknown;
+      /** Errors for which the outcome at PayPal is unknown (e.g. a write that timed out). */
+      isUnknownOutcome?: (err: unknown) => boolean;
     } = {},
   ) {}
 
@@ -113,8 +142,8 @@ export class ProposalStore {
       p.result = await this.execute(p.kind, p.payload);
       p.status = "executed";
     } catch (err) {
-      p.status = "failed";
-      p.error = this.options.describeError ? this.options.describeError(err) : { message: String(err) };
+      p.status = err instanceof ProposalObsoleteError ? "obsolete" : this.options.isUnknownOutcome?.(err) ? "unknown" : "failed";
+      p.error = this.options.describeError ? this.options.describeError(err) : { message: err instanceof Error ? err.message : String(err) };
     }
     return p;
   }

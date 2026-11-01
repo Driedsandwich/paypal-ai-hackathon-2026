@@ -3,6 +3,16 @@ import type { AiCompletionRequest, AiCompletionResult, AiProvider, AiToolCallRec
 
 type ProviderOptions = NonNullable<Parameters<typeof generateText>[0]["providerOptions"]>;
 
+export const AI_TIMEOUT_MS = 45_000;
+
+/** The model did not finish within the deadline; the call was aborted. */
+export class AiTimeoutError extends Error {
+  constructor(readonly timeoutMs: number) {
+    super(`The AI model did not answer within ${Math.round(timeoutMs / 1000)} seconds`);
+    this.name = "AiTimeoutError";
+  }
+}
+
 /**
  * Real model through the Vercel AI SDK (ai@6). One class for every vendor;
  * the vendor-specific LanguageModel is created in ai/index.ts.
@@ -13,7 +23,7 @@ export class AiSdkProvider implements AiProvider {
     readonly name: string,
     readonly model: string,
     private readonly languageModel: LanguageModel,
-    private readonly defaults: { maxOutputTokens: number; providerOptions?: ProviderOptions },
+    private readonly defaults: { maxOutputTokens: number; providerOptions?: ProviderOptions; timeoutMs?: number },
   ) {}
 
   async complete(request: AiCompletionRequest): Promise<AiCompletionResult> {
@@ -42,14 +52,24 @@ export class AiSdkProvider implements AiProvider {
       }
     }
 
-    const result = await generateText({
-      model: this.languageModel,
-      ...(system ? { system } : {}),
-      messages,
-      maxOutputTokens: Math.min(request.maxTokens ?? this.defaults.maxOutputTokens, this.defaults.maxOutputTokens),
-      ...(tools ? { tools, stopWhen: stepCountIs(request.maxSteps ?? 5) } : {}),
-      ...(this.defaults.providerOptions ? { providerOptions: this.defaults.providerOptions } : {}),
-    });
+    // One deadline for the whole call (a chat with tool steps is one call).
+    const timeoutMs = this.defaults.timeoutMs ?? AI_TIMEOUT_MS;
+    const abortSignal = AbortSignal.timeout(timeoutMs);
+    let result: Awaited<ReturnType<typeof generateText>>;
+    try {
+      result = await generateText({
+        model: this.languageModel,
+        ...(system ? { system } : {}),
+        messages,
+        maxOutputTokens: Math.min(request.maxTokens ?? this.defaults.maxOutputTokens, this.defaults.maxOutputTokens),
+        ...(tools ? { tools, stopWhen: stepCountIs(request.maxSteps ?? 5) } : {}),
+        ...(this.defaults.providerOptions ? { providerOptions: this.defaults.providerOptions } : {}),
+        abortSignal,
+      });
+    } catch (err) {
+      if (abortSignal.aborted) throw new AiTimeoutError(timeoutMs);
+      throw err;
+    }
     return {
       text: result.text,
       provider: this.name,

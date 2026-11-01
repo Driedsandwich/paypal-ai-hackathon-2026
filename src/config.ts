@@ -23,6 +23,8 @@ export interface AppSettings {
    * address; N = use the N-th X-Forwarded-For entry from the right (1 on Render).
    */
   trustProxyHops: number;
+  /** Concurrent in-flight API/webhook requests before new ones get 503 (MAX_CONCURRENT_REQUESTS). */
+  maxConcurrentRequests: number;
 }
 
 function num(env: NodeJS.ProcessEnv, name: string, fallback: number, min: number, max: number, integer = false): number {
@@ -66,6 +68,7 @@ export function loadSettings(env: NodeJS.ProcessEnv = process.env): AppSettings 
       .filter(Boolean),
     agStudioLicensed: (env.AG_STUDIO_LICENSE ?? "").trim() !== "",
     trustProxyHops: num(env, "TRUST_PROXY_HOPS", 0, 0, 10, true),
+    maxConcurrentRequests: num(env, "MAX_CONCURRENT_REQUESTS", 20, 1, 10_000, true),
   };
 }
 

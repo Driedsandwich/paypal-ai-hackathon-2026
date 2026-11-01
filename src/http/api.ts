@@ -15,7 +15,7 @@ import type { PayPalConfig } from "../paypal/config.js";
 import type { Invoice } from "../paypal/types.js";
 import type { SeedDemoDataPayload } from "../proposals/actions.js";
 import { buildInvoicePayload, buildOrderPayload } from "../agent/tasks.js";
-import type { ProposalStatus, ProposalStore } from "../proposals/store.js";
+import { PROPOSAL_STATUSES, type ProposalStatus, type ProposalStore } from "../proposals/store.js";
 import { clientAddress, limitKey } from "./client-address.js";
 import { HttpError, ok, readJsonBody } from "./util.js";
 
@@ -339,7 +339,7 @@ const ROUTES: Route[] = [
     method: "GET",
     pattern: /^\/api\/proposals$/,
     handler: async ({ res, deps, query }) => {
-      const status = z.enum(["pending", "executing", "executed", "failed", "rejected"]).optional().catch(undefined).parse(query.get("status") ?? undefined) as ProposalStatus | undefined;
+      const status = z.enum(PROPOSAL_STATUSES as [ProposalStatus, ...ProposalStatus[]]).optional().catch(undefined).parse(query.get("status") ?? undefined) as ProposalStatus | undefined;
       ok(res, deps.proposals.list(status ? { status } : undefined));
     },
   },
