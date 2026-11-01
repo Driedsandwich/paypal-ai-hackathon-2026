@@ -133,6 +133,10 @@ h1, h2, h3, p { margin: 0; }
   border-top: 1px solid var(--rule);
 }
 
+.notice-mobile { padding: 2px var(--page-pad); font-size: 13px; color: var(--ink-2); }
+.notice-mobile summary { min-height: 30px; display: flex; align-items: center; gap: 6px; cursor: pointer; color: var(--warning); }
+.notice-mobile p { margin: 4px 0; }
+
 /* ---------- Journey (S3) ---------- */
 .journey { display: block; }
 .sale-head { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; gap: 24px; }
@@ -154,6 +158,11 @@ h1, h2, h3, p { margin: 0; }
 }
 .callout, .hint { grid-row: 1; justify-self: center; position: relative; z-index: 1; }
 .callout { width: min(320px, 26vw); min-width: 280px; }
+/* At the ends of the track the callout aligns to the edge (its pointer stays on the step). */
+.callout.at-end { justify-self: end; }
+.callout.at-end::after { left: auto; right: calc(10vw - 7px); transform: rotate(45deg); }
+.callout.at-start { justify-self: start; }
+.callout-row:has(.callout.at-end) .end-right, .callout-row:has(.callout.at-start) .end-left { bottom: auto; top: 0; }
 .callout-box {
   background: var(--paper); border: 1px solid var(--rule); border-radius: 4px; padding: 16px 18px;
   box-shadow: 0 1px 0 var(--rule), 0 6px 18px rgba(37, 37, 34, 0.06);
@@ -353,8 +362,9 @@ textarea { min-height: 96px; resize: vertical; }
   .notice { flex-direction: column; gap: 0; padding: 4px var(--page-pad); font-size: 12px; }
   .notice-right { display: none; }
   .banner { font-size: 12px; }
-  .counts { flex-wrap: wrap; justify-content: center; gap: 6px 0; padding: 8px 8px; }
-  .count { padding: 2px 14px; gap: 6px; }
+  .counts { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px 0; padding: 8px 8px; }
+  .count { grid-column: span 2; justify-content: center; padding: 2px 6px; gap: 6px; }
+  .count:nth-child(4), .count:nth-child(5) { grid-column: span 3; }
   .count .icon { display: none; }
   .count:nth-child(4) { border-left: 0; }
   .count-label { font-size: 15px; }
@@ -366,12 +376,9 @@ textarea { min-height: 96px; resize: vertical; }
   .sale-title h1 { font-size: 26px; -webkit-line-clamp: 3; line-clamp: 3; }
   .sale-title .sale-no { display: block; }
   .sale-title .jp { font-size: 24px; }
-  .sale-meta { font-size: 15px; flex-wrap: wrap; gap: 0 6px; }
+  .sale-meta { font-size: 14px; flex-wrap: wrap; gap: 0 6px; }
   .sale-meta .buyer { max-width: 100%; }
-  .notice-mobile { padding: 4px var(--page-pad); font-size: 12px; color: var(--ink-2); }
-  .notice-mobile summary { min-height: 32px; display: flex; align-items: center; gap: 6px; cursor: pointer; color: var(--warning); }
-  .notice-mobile p { margin: 4px 0; }
-  .notice.desktop-only, .banner.desktop-only { display: none !important; }
+  .notice-mobile summary { display: block; }
   .sale-en { display: none; }
   .route { font-size: 14px; margin-top: 2px; }
   .callout-row { display: block; min-height: 0; padding: 12px 0 14px; }
@@ -394,6 +401,7 @@ textarea { min-height: 96px; resize: vertical; }
   .branch-line { flex: none; width: 28px; height: 22px; margin: 0; border-bottom-left-radius: 6px; margin-bottom: 0; }
   .branch-label { position: static; }
   .branch-card { margin-left: auto; min-width: 0; max-width: 62%; padding: 8px 10px; }
+  .branch-row.potential .branch-card span { display: none; }
   .activity { padding: 12px 12px 4px; margin-top: 14px; }
   .activity li { grid-template-columns: 92px minmax(0, 1fr); font-size: 14px; }
   .sale-list li a { grid-template-columns: 70px minmax(0, 1fr); }

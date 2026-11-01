@@ -144,7 +144,7 @@ function JourneyDetail({ journey: j, health, refresh, index, total, prevId, next
             </div>
           )}
           {j.callout && (
-            <div className="callout" style={{ gridColumn: j.callout.step }}>
+            <div className={`callout ${j.callout.step === 5 ? "at-end" : j.callout.step === 1 ? "at-start" : ""}`} style={{ gridColumn: j.callout.step }}>
               <Callout journey={j} health={health} refresh={refresh} />
             </div>
           )}

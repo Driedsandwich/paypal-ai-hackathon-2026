@@ -135,19 +135,11 @@ export function App() {
           </div>
         </div>
       )}
-      <div className="notice desktop-only">
-        <span>{health.demo.notice}</span>
-        <span className="notice-right">Nothing is sent until you approve.</span>
-      </div>
-      {health.banner.length > 0 && (
-        <div className="banner desktop-only" role="status">
-          {health.banner.map((b) => (
-            <p key={b}><Icon name="alert" size={16} /> {b}</p>
-          ))}
-        </div>
-      )}
-      <details className="notice-mobile mobile-only">
-        <summary><Icon name="alert" size={16} /> Demo mode{health.paypal.offline ? " · offline" : ""} · nothing is sent until you approve</summary>
+      <details className="notice-mobile">
+        <summary>
+          <Icon name="alert" size={16} /> Demo mode{health.paypal.offline ? " · offline: PayPal is simulated" : ""}{health.ai.provider === "fake" ? " · offline AI" : ""} · nothing is sent until you approve
+          {health.banner.length > 0 && <span className="muted"> (details)</span>}
+        </summary>
         <p>{health.demo.notice}</p>
         {health.banner.map((b) => <p key={b}>{b}</p>)}
       </details>
