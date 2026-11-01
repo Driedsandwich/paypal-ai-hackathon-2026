@@ -1,14 +1,52 @@
-# paypal-ai-hackathon-2026
+# Okuri: an AI export desk for small Japanese sellers (working title)
 
-Entry for the PayPal AI Hackathon 2026 (Devpost). Work in progress.
+Entry for the PayPal AI Hackathon 2026 (Devpost). Built on the **PayPal REST APIs (sandbox)**
+and an **AI agent** (Anthropic Claude by default; Google Gemini or OpenAI optional).
 
 ## What it does
 
-> TODO: one-paragraph description of the project (problem, who it is for, how PayPal and AI are used).
+Small sellers in Japan (handmade crafts, used camera gear, collectibles) find overseas buyers
+on social media, then stall on four chores: writing an English listing, asking for payment in
+the buyer's currency, proving shipment, and answering a dispute in English. Okuri is a seller
+cockpit where an AI agent does the paperwork and PayPal moves the money. The seller types the
+item in Japanese. The agent drafts the English listing and a USD price, prepares a PayPal
+invoice, records the tracking number with PayPal after shipping, and, when a buyer opens a
+dispute, builds an evidence pack and drafts an English reply. **Nothing reaches a buyer or
+PayPal until the seller clicks Approve**, and the server enforces that.
 
-- TODO: main user flow
-- TODO: which PayPal APIs are used and why
-- TODO: what the AI part does
+- **Main flow:** New item (Japanese) → AI listing + price estimate + customs line → invoice
+  proposal → seller approves → PayPal sends the invoice → buyer pays (webhook) → seller adds
+  tracking (approved) → if a dispute opens, AI evidence pack + reply (approved).
+- **PayPal APIs used:** Invoicing v2 (create draft, send, remind, list, get, next number),
+  Orders v2 (payment links as a fallback, capture, `/track`), Add Tracking v1
+  (`trackers-batch`, for invoice payments), Customer Disputes v1 (list, get, provide evidence,
+  send message, accept claim), Webhooks (signature verification).
+- **AI part:** see [How AI is used](#how-ai-is-used).
+
+## Judge walkthrough (about 5 minutes)
+
+1. Open the app. The header shows which PayPal environment and which AI model are in use. A
+   yellow banner explains anything that is not configured.
+2. **New item:** pick a sample item (for example the tea bowl) and click *Draft English listing
+   with AI*. You get an English title and description, item specifics, a USD price
+   **estimate** (converted in code at `FX_JPY_PER_USD`), a plain customs description and an HS
+   code candidate marked **check before use**.
+3. Enter a sandbox buyer email and click *Prepare invoice for approval*. A proposal card shows
+   the exact Invoicing v2 payload and the AI-written message to the buyer. Click **Approve and
+   send**: the app creates the draft invoice and sends it through PayPal.
+4. **Invoices:** the grid is read live from the sandbox. *Draft reminders for unpaid invoices*
+   asks the AI for a polite reminder per unpaid invoice; each one is a separate proposal.
+5. Pay the invoice as the sandbox buyer. If a webhook is configured, `INVOICING.INVOICE.PAID`
+   shows up under **Dashboard → PayPal webhook events**.
+6. **Shipments:** enter the invoice id, carrier (for example `Japan Post`) and a tracking
+   number, then approve. The app looks up the PayPal transaction and records the tracking.
+7. **Disputes:** open a dispute as the sandbox buyer (Resolution Center), then *Open* it here,
+   add the invoice id and tracking, and click *Build evidence pack with AI*. You get a summary,
+   a timeline, a PDF invoice summary to attach, and an English reply. Any date, amount or
+   tracking number the AI wrote that is not in the PayPal data is flagged in red. Approve
+   *Provide evidence* and/or *Send reply*.
+8. **Dashboard → Ask Okuri:** free chat (Japanese or English). The agent can look things up
+   in PayPal; anything it wants to send becomes a proposal in the approvals panel.
 
 ## Built during the submission period
 
@@ -18,11 +56,13 @@ repository was created during that period. Dated log of the work (newest last):
 | Date (UTC) | Work |
 | --- | --- |
 | 2026-10-31 | Project scaffold: TypeScript/Node setup, PayPal REST client (OAuth token, Orders v2 create/capture, webhook endpoint with signature verification via the PayPal API), pluggable AI provider interface, tests with mocked PayPal responses, pre-publish check script, CI. |
+| 2026-11-01 | Build pass 1 (spec v1): Invoicing v2, Add Tracking, Orders tracking and Customer Disputes calls; approval gate (server-side proposals); webhook event routing; AI agent (listing, invoice, reminders, dispute evidence pack, free chat) on the Vercel AI SDK with an offline fake provider; AI rate limits and daily cap; JSON API; minimal React UI with five views. |
 
 ## Setup
 
-Requirements: Node.js 20.6 or later (for `--env-file`), npm, a free PayPal developer account
-(sandbox app with a client ID and secret).
+Requirements: Node.js 20.19 or later (22 recommended), npm, and a free PayPal developer
+account (sandbox REST app with a client ID and secret). For a real AI model, an API key for
+Anthropic, Google AI (Gemini) or OpenAI. Without any keys the app still runs offline.
 
 ```sh
 git clone <this-repo-url>
@@ -31,31 +71,74 @@ npm ci
 cp .env.example .env   # then fill in the values (see below)
 ```
 
+PayPal sandbox preparation:
+
+1. In the PayPal developer dashboard, create a sandbox REST app and copy its client ID and
+   secret into `PAYPAL_CLIENT_ID` / `PAYPAL_CLIENT_SECRET`.
+2. Note the sandbox **personal** (buyer) account emails and put them in `DEMO_BUYER_EMAILS`
+   if you want *Seed demo data*.
+3. Optional: add a webhook for `https://<your-host>/webhooks/paypal` with the events
+   `INVOICING.INVOICE.PAID`, `PAYMENT.CAPTURE.COMPLETED`, `CUSTOMER.DISPUTE.CREATED` and
+   `CUSTOMER.DISPUTE.UPDATED`, and put its id in `PAYPAL_WEBHOOK_ID`.
+
 ## Run
 
 ```sh
-npm run build
-node --env-file=.env dist/server.js
+npm run build                          # server (tsc) + UI (vite) into dist/
+node --env-file=.env dist/server.js    # or: npm start (reads the real environment)
 ```
 
-The server listens on `PORT` (default 3000):
+Open `http://localhost:3000`. The server listens on `PORT` (default 3000).
 
-- `GET /health` – liveness check, shows the PayPal environment in use
-- `POST /webhooks/paypal` – PayPal webhook receiver (signature verified via PayPal)
+UI development with hot reload: run the server as above, then `npm run dev:web` (Vite on its
+own port, proxying `/api` to port 3000).
 
-> TODO: app routes and a short walkthrough for judges once the project is chosen.
+### Payment path (invoice or payment link)
+
+`PAYMENT_PATH=invoice` (default) uses the Invoicing v2 API. If the merchant sandbox account
+cannot create invoices in USD (this can depend on the account's country), set
+`PAYMENT_PATH=order`: the same flow then creates Orders v2 payment links (`payer-action`
+link), the buyer is sent back to `/paypal/return`, and a capture proposal appears for the
+seller to approve. The header and `/api/health` always show the path in use. **The hosted
+demo is not deployed yet** (next pass); its path will be stated here once it is tested
+against the sandbox account.
+
+### HTTP API
+
+JSON under `/api/`, every answer is `{ "ok": true, "data": … }` or
+`{ "ok": false, "error": { "code", "message", … } }`. PayPal failures include PayPal's
+`debug_id` (never request headers). POST bodies must be `application/json`, 64 KB max.
+
+| Method and path | What it does |
+| --- | --- |
+| `GET /api/health` (also `/health`) | Configuration status, AI model, limits, banner messages |
+| `POST /api/listings/draft` | AI: Japanese item → English listing (rate limited) |
+| `POST /api/invoices/prepare` | AI: buyer message + invoice (or payment link) **proposal** |
+| `POST /api/payment-links/prepare` | AI: Orders v2 payment link **proposal** |
+| `GET /api/invoices`, `GET /api/invoices/{id}` | Live invoices from PayPal |
+| `POST /api/invoices/nudge` | AI: reminder **proposals** for unpaid invoices |
+| `GET /api/orders/{id}`, `POST /api/orders/{id}/capture` | Order status; capture **proposal** |
+| `POST /api/tracking` | Tracking **proposal** (`kind: "invoice"` or `"order"`) |
+| `GET /api/disputes`, `GET /api/disputes/{id}` | Live disputes from PayPal |
+| `POST /api/disputes/{id}/evidence-pack` | AI: evidence pack + evidence and reply **proposals** |
+| `POST /api/disputes/{id}/accept-claim` | Accept-claim **proposal** |
+| `GET /api/proposals`, `POST /api/proposals/{id}/approve`, `…/reject` | The approval gate |
+| `GET /api/events` | Webhook event log (in memory) |
+| `POST /api/demo/seed` | **Proposal** to create sample invoices/payment links |
+| `POST /api/chat` | AI: free chat with tools (rate limited) |
+| `POST /webhooks/paypal` | PayPal webhook receiver (signature verified via PayPal) |
 
 ## Test
 
 ```sh
-npm test                  # unit tests; PayPal is mocked, no keys or network needed
-npm run typecheck         # TypeScript type check
+npm test                  # unit tests; PayPal and AI are faked, no keys or network needed
+npm run typecheck         # TypeScript (server, tests and web UI)
 npm run prepublish-check  # scan tracked files for secrets, local paths and emails
 ```
 
 ## Environment variables
 
-See `.env.example`. Never commit `.env`.
+See `.env.example`. Never commit `.env`. All are optional.
 
 | Name | Description |
 | --- | --- |
@@ -63,32 +146,76 @@ See `.env.example`. Never commit `.env`.
 | `PAYPAL_CLIENT_SECRET` | Secret of that app. |
 | `PAYPAL_ENV` | `sandbox` (default) or `live`. Selects `https://api-m.sandbox.paypal.com` or `https://api-m.paypal.com`. |
 | `PAYPAL_WEBHOOK_ID` | ID of the webhook registered for the app; required to verify webhook signatures. |
-| `AI_PROVIDER` | AI provider name. Empty or `fake` uses the built-in fake provider. |
+| `PAYMENT_PATH` | `invoice` (default, Invoicing v2) or `order` (Orders v2 payment links). |
+| `AI_PROVIDER` | `anthropic`, `google`, `openai` or `fake`. Empty means `fake` (offline, rule-based). |
+| `AI_MODEL` | Model id. Defaults: `claude-opus-5-5` (anthropic), `gemini-3.5-flash` (google), `gpt-5.4-mini` (openai). |
 | `AI_API_KEY` | API key for the chosen AI provider. |
-| `PORT` | Optional HTTP port (default 3000). |
+| `AI_MAX_OUTPUT_TOKENS` | Max output tokens per AI call, thinking included (default 2000). |
+| `AI_RATE_LIMIT_PER_IP` | AI requests per client address per window (default 20). |
+| `AI_RATE_LIMIT_WINDOW_MINUTES` | Window for the per-address limit (default 10). |
+| `AI_DAILY_CAP` | AI requests per UTC day for the whole server (default 300). |
+| `FX_JPY_PER_USD` | Exchange rate for price estimates (default 150). |
+| `SELLER_BUSINESS_NAME` | Seller name on invoices and the PayPal checkout page. |
+| `PUBLIC_BASE_URL` | Public URL of the app, for PayPal return/cancel URLs (default `http://localhost:PORT`). |
+| `DEMO_BUYER_EMAILS` | Sandbox buyer account emails for *Seed demo data*, comma-separated. |
+| `TRUST_PROXY` | `1` behind a hosting proxy, so rate limits use `X-Forwarded-For`. |
+| `AG_STUDIO_LICENSE` | AG Studio licence for the dashboard (next pass); empty shows a watermark. |
+| `PORT` | HTTP port (default 3000). |
+
+## How AI is used
+
+At runtime the model provider is chosen by `AI_PROVIDER`:
+
+- **Anthropic Claude** (`anthropic`, default for the hosted demo; model `claude-opus-5-5`
+  unless `AI_MODEL` says otherwise),
+- **Google Gemini** (`google`) or **OpenAI** (`openai`),
+- **fake**: a built-in, rule-based offline provider for tests and keyless demos. It is labelled
+  "offline demo" everywhere it appears.
+
+All real providers are called through the **Vercel AI SDK** (`ai` 6 with `@ai-sdk/*`).
+The agent has four typed tasks and a chat entry point:
+
+1. **draftListing**: Japanese item → English title, description, item specifics, a plain
+   customs description and an HS code candidate (labelled "check before use"). The USD price
+   is computed in code from `FX_JPY_PER_USD`, not by the model.
+2. **prepareInvoice**: writes the buyer-facing note; the invoice JSON is built in code.
+3. **nudgeUnpaid**: a friendly reminder per unpaid invoice (only ids that exist are kept).
+4. **disputeEvidencePack**: summary, timeline, reply draft and evidence notes from PayPal's
+   dispute data plus the seller's facts. A fact check flags any date, amount, tracking number
+   or id that is not in the inputs. Buyer names and emails are not sent to the model.
+5. **Chat**: the model can call tools named like PayPal's agent toolkit (`list_invoices`,
+   `get_dispute`, `send_invoice_reminder`, `create_shipment_tracking`, …). Read tools run;
+   tools that would change something only create proposals.
+
+Every model answer must be JSON matching a schema (validated with zod, one retry). The
+seller approves every action that reaches PayPal or a buyer. AI routes have a per-address
+rate limit, a daily cap and an output-token cap, with a clear message when a limit is hit.
 
 ## Architecture
 
 ```
 src/
-  server.ts          node:http server (health + webhook routes)
-  paypal/
-    config.ts        env -> config, sandbox/live base URL
-    client.ts        PayPal REST via fetch: OAuth token (cached until expiry),
-                     Orders v2 create/capture, verify-webhook-signature
-    webhook.ts       framework-free webhook handler (parse -> verify -> onEvent)
-  ai/
-    provider.ts      AiProvider interface (the only thing callers depend on)
-    fake-provider.ts deterministic provider for tests/offline demos
-    http-provider.ts template for a real provider (fetch, no vendor SDK)
-scripts/
-  prepublish-check.mjs  pre-publish scan of git-tracked files
-test/                vitest tests (fetch is replaced by a fake; no keys needed)
-docs/media/          demo video and screenshots
+  server.ts            node:http app: /api, /webhooks/paypal, /paypal/return, static UI
+  config.ts            env -> settings (all optional)
+  http/                JSON API routes, error mapping, static file serving
+  paypal/              REST client (fetch, no SDK): OAuth, Orders v2, Invoicing v2,
+                       Add Tracking, Disputes, webhook verification; carrier mapping; types
+  proposals/           approval gate (ProposalStore) and the executor, the only code that
+                       calls PayPal write methods
+  ai/                  provider seam, Vercel AI SDK provider, offline fake provider
+  agent/               the four agent tasks, chat tools, schemas, JSON runner, fact check
+  events/              in-memory webhook event log
+  limits/              AI rate limit and daily cap
+  docs/simple-pdf.ts   tiny PDF writer for the evidence attachment
+  demo/items.ts        Japanese sample items
+web/                   React UI (Vite), built to dist/public
+scripts/               pre-publish scan of git-tracked files
+test/                  vitest tests (PayPal and AI faked; no keys needed)
+docs/                  build spec, decisions, build log, media
 ```
 
-PayPal is called through its public REST API with `fetch` (no SDK). The only runtime
-dependency is Node itself; dev dependencies are TypeScript, vitest and Node types.
+No database: state the app owns (proposals, events, rate-limit counters) is in memory;
+invoices and disputes are always read live from PayPal.
 
 ## Demo media
 
@@ -97,18 +224,36 @@ Demo video and screenshots go in [`docs/media/`](docs/media/).
 ## Pre-existing components
 
 Third-party code, assets, APIs and services used by this project (anything not created
-during the submission period). Added as they are used.
+during the submission period). Versions are pinned exactly in `package.json`.
 
 | Component | License / terms | How it is used |
 | --- | --- | --- |
-| | | |
+| PayPal REST APIs (sandbox) | PayPal developer agreement | Payments: invoicing, orders, tracking, disputes, webhooks |
+| Anthropic API (Claude) | Anthropic commercial terms | Default AI model at runtime |
+| Google Gemini API | Google AI terms | Optional AI model at runtime |
+| OpenAI API | OpenAI terms | Optional AI model at runtime |
+| `ai` 6.0.320 (Vercel AI SDK) | Apache-2.0 | Calls the AI models, tool calling |
+| `@ai-sdk/anthropic` 3.0.137 | Apache-2.0 | Anthropic provider for the AI SDK |
+| `@ai-sdk/google` 3.0.140 | Apache-2.0 | Google provider for the AI SDK |
+| `@ai-sdk/openai` 3.0.135 | Apache-2.0 | OpenAI provider for the AI SDK |
+| `zod` 4.6.7 | MIT | Input and AI-output validation, tool schemas |
+| `react` 19.3.1, `react-dom` 19.3.1 | MIT | Web UI |
+| `vite` 8.3.5 (dev) | MIT | Builds the web UI (pulls in `lightningcss`, MPL-2.0, at build time only) |
+| `@vitejs/plugin-react` 6.1.2 (dev) | MIT | React support for Vite |
+| `typescript` 5.9.3 (dev) | Apache-2.0 | Type checking and server build |
+| `vitest` 4.1.12 (dev) | MIT | Unit tests |
+| `@types/node` 20.19.43, `@types/react` 19.3.0, `@types/react-dom` 19.3.0 (dev) | MIT | Type definitions |
+| PayPal OpenAPI specifications (`paypal/paypal-rest-api-specifications`) | Reference only, not copied | Checked request/response field names |
+
+`@paypal/agent-toolkit` was evaluated but is **not** used (see `docs/DECISIONS.md`).
 
 ## Before submitting
 
-- [ ] Fill in the TODO sections above and the work log.
+- [ ] Fill in the work log and demo media.
 - [ ] `npm test` and `npm run prepublish-check` pass.
 - [ ] Repository is public and contains `LICENSE`.
 - [ ] Judges can run it from the Setup/Run steps with their own sandbox credentials.
+- [ ] Hosted demo deployed; README states its payment path.
 
 ## License
 
