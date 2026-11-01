@@ -3,6 +3,11 @@
 Entry for the PayPal AI Hackathon 2026 (Devpost). Built on the **PayPal REST APIs (sandbox)**
 and an **AI agent** (Anthropic Claude by default; Google Gemini or OpenAI optional).
 
+**Try it: <https://okuri.onrender.com>** (PayPal sandbox, Claude with Gemini as fallback). It
+runs on Render's free plan: if nobody has used it for a while, the first page load takes
+**about a minute** while the instance wakes up. The steps are in the
+[judge walkthrough](#judge-walkthrough-about-5-minutes).
+
 ## What it does
 
 Small sellers in Japan (handmade crafts, used camera gear, collectibles) find overseas buyers
@@ -25,11 +30,12 @@ PayPal until the seller clicks Approve**, and the server enforces that.
 
 ## Hosted demo
 
-**URL: `https://<placeholder>.onrender.com`** (to be filled in once deployed; see
+**URL: <https://okuri.onrender.com>** (deployed from `render.yaml`; see
 [Deploy on Render](#deploy-on-render)).
 
-- Runs on Render's free plan with the PayPal **sandbox** and **Claude** (`claude-opus-5-5`)
-  as the AI model, with Gemini as an automatic fallback. The header shows both labels.
+- Runs on Render's free plan with the PayPal **sandbox** and **Claude** (`claude-opus-5-5`,
+  Anthropic API) as the AI model, with **Gemini** (Google AI Studio API) as an automatic
+  fallback. The header shows both labels.
 - **Waking up:** the free instance sleeps after about 15 minutes without visitors. The first
   page load then takes **about one minute** (a blank page or Render's loading screen); after
   that the app answers normally. Waking up also clears the in-memory state (your proposals
@@ -273,6 +279,11 @@ At runtime the model provider is chosen by `AI_PROVIDER`:
 - **fake**: a built-in, rule-based offline provider for tests and keyless demos. It is labelled
   "offline demo" everywhere it appears.
 
+The hosted demo uses Claude (Anthropic API) as the primary model and Gemini (Google AI Studio
+API key, `AI_FALLBACK_PROVIDER=google`) as the fallback. A missing key never stops the server:
+without `AI_API_KEY` the offline provider answers and a banner says so; without
+`AI_FALLBACK_API_KEY` the app runs without a fallback and `/api/health` says so (`ai.warnings`).
+
 All real providers are called through the **Vercel AI SDK** (`ai` 6 with `@ai-sdk/*`).
 With `AI_FALLBACK_PROVIDER` (for example `google`), a second provider answers automatically
 when the primary errors, times out, is cut off by the output cap, or its daily budget
@@ -307,6 +318,18 @@ seller approves every action that reaches PayPal or a buyer. AI routes have a pe
 rate limit (counted after input validation), a separate limit for invalid requests, a daily
 budget of model calls (each chat tool step and each retry counts) and an output-token cap
 per call, with a clear message when a limit is hit. Model calls are aborted after 45 seconds.
+
+## AI tools used
+
+- **At runtime (in the app):** Claude through the Anthropic API is the primary model; Gemini
+  through the Google AI Studio API is the automatic fallback. Both are called through the
+  Vercel AI SDK. Details: [How AI is used](#how-ai-is-used). (OpenAI is supported by the code
+  but not used on the hosted demo.)
+- **To build the project:** AI coding agents helped. **Claude Code** (Anthropic) wrote the
+  implementation and the fixes, working from written specs and reviews. **OpenAI Codex** made
+  the visual design mockups (the reference images in `docs/design/`) and did an independent
+  code review. The coding work is logged pass by pass in `docs/BUILD_LOG.md`, with the
+  decisions in `docs/DECISIONS.md`. The coding agents are not part of the running app.
 
 ## Architecture
 
@@ -361,7 +384,7 @@ during the submission period). Dependencies added in this build are pinned to ex
 | --- | --- | --- |
 | PayPal REST APIs (sandbox) | PayPal developer agreement | Payments: invoicing, orders, tracking, disputes, webhooks |
 | Anthropic API (Claude) | Anthropic commercial terms | Default AI model at runtime |
-| Google Gemini API | Google AI terms | Optional AI model at runtime |
+| Google Gemini API (Google AI Studio) | Google AI terms | Fallback AI model at runtime (hosted demo) |
 | OpenAI API | OpenAI terms | Optional AI model at runtime |
 | `ai` 6.0.320 (Vercel AI SDK) | Apache-2.0 | Calls the AI models, tool calling |
 | `@ai-sdk/anthropic` 3.0.137 | Apache-2.0 | Anthropic provider for the AI SDK |
@@ -387,7 +410,7 @@ during the submission period). Dependencies added in this build are pinned to ex
 - [ ] `npm test` and `npm run prepublish-check` pass.
 - [ ] Repository is public and contains `LICENSE`.
 - [ ] Judges can run it from the Setup/Run steps with their own sandbox credentials.
-- [ ] Hosted demo deployed from `render.yaml`; URL filled in under *Hosted demo*; payment path tested.
+- [x] Hosted demo deployed from `render.yaml`; URL filled in under *Hosted demo*; payment path tested (invoice path, live check 2026-11-01).
 - [ ] Sandbox buyer login added to the Devpost testing instructions (not to this repository).
 
 ## License
