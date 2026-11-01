@@ -9,6 +9,10 @@ import type { Dispute } from "./types.js";
 // - accept-claim: allowed options are in `allowed_response_options.accept_claim`.
 // The OpenAPI file names no rel values for these HATEOAS links, so a link counts when its rel
 // is the action name (send_message / send-message) or its href path ends with the action path.
+// Pass 4: every action needs its HATEOAS link, accept-claim included. A real sandbox case whose
+// links held only `self` was reported as accept-claim allowed, because `allowed_response_options`
+// alone used to count. Now `allowed_response_options`, where present, can only narrow: if it is
+// there, accept-claim must also be listed in it (with no empty list of claim types).
 
 export type DisputeAction = "send_message" | "provide_evidence" | "accept_claim";
 
@@ -36,6 +40,20 @@ export function hasActionLink(d: Pick<Dispute, "links">, action: DisputeAction):
   });
 }
 
+/**
+ * `allowed_response_options` narrows what the links offer, never widens it. Absent (or not an
+ * object): no restriction. Present: the option must be listed, and an explicit empty list of
+ * claim types means nothing can be accepted.
+ */
+function responseOptionsAllow(d: Pick<Dispute, "allowed_response_options">, option: "accept_claim"): boolean {
+  const opts = d.allowed_response_options as Record<string, unknown> | null | undefined;
+  if (opts === undefined || opts === null || typeof opts !== "object") return true;
+  const entry = opts[option];
+  if (entry === undefined || entry === null) return false;
+  const types = (entry as { accept_claim_types?: unknown }).accept_claim_types;
+  return !(Array.isArray(types) && types.length === 0);
+}
+
 export function disputeActions(d: Dispute): Record<DisputeAction, ActionVerdict> {
   const stage = d.dispute_life_cycle_stage ?? "unknown";
   const yes: ActionVerdict = { allowed: true, reason: "" };
@@ -49,7 +67,7 @@ export function disputeActions(d: Dispute): Record<DisputeAction, ActionVerdict>
     ? yes
     : { allowed: false, reason: "PayPal is not asking for evidence on this dispute right now (no provide-evidence action)." };
   const acceptClaim: ActionVerdict =
-    hasActionLink(d, "accept_claim") || d.allowed_response_options?.accept_claim !== undefined
+    hasActionLink(d, "accept_claim") && responseOptionsAllow(d, "accept_claim")
       ? yes
       : { allowed: false, reason: "PayPal does not offer accepting the claim on this dispute right now." };
   return { send_message: sendMessage, provide_evidence: provideEvidence, accept_claim: acceptClaim };

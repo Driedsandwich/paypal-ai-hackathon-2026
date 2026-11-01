@@ -1,8 +1,9 @@
+import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import { DemoBuyers } from "../src/demo/buyers.js";
 import { agentTools } from "../src/agent/tools.js";
 import { loadSettings } from "../src/config.js";
-import { disputeActions, hasActionLink } from "../src/paypal/dispute-actions.js";
+import { allowedActionList, disputeActions, hasActionLink, sellerActionState } from "../src/paypal/dispute-actions.js";
 import type { Dispute } from "../src/paypal/types.js";
 import { ProposalStore } from "../src/proposals/store.js";
 import { FAKE_CONFIG } from "./helpers/fake-fetch.js";
@@ -25,13 +26,43 @@ describe("disputeActions", () => {
     expect(disputeActions({ dispute_id: "D", dispute_life_cycle_stage: "INQUIRY" }).send_message.reason).toMatch(/does not offer sending a message/);
   });
 
-  it("matches action links by rel or by path, and accept-claim by allowed_response_options", () => {
+  it("matches action links by rel or by path; allowed_response_options only narrows accept-claim", () => {
     expect(hasActionLink({ links: [link("D", "provide-evidence", "something_else")] }, "provide_evidence")).toBe(true);
     expect(hasActionLink({ links: [{ href: "https://x.invalid/other", rel: "provide_evidence" }] }, "provide_evidence")).toBe(true);
     expect(hasActionLink({ links: [link("D", "provide-evidence-extra", "x")] }, "provide_evidence")).toBe(false);
-    expect(disputeActions({ dispute_id: "D", allowed_response_options: { accept_claim: { accept_claim_types: ["REFUND"] } } }).accept_claim.allowed).toBe(true);
+    const accept = (d: Partial<Dispute>) => disputeActions({ dispute_id: "D", ...d }).accept_claim.allowed;
+    // Pass 4: allowed_response_options alone no longer allows accept-claim; the link is required.
+    expect(accept({ allowed_response_options: { accept_claim: { accept_claim_types: ["REFUND"] } } })).toBe(false);
+    expect(accept({ links: [link("D", "accept-claim")] })).toBe(true);
+    expect(accept({ links: [link("D", "accept-claim")], allowed_response_options: { accept_claim: { accept_claim_types: ["REFUND"] } } })).toBe(true);
+    expect(accept({ links: [link("D", "accept-claim")], allowed_response_options: { accept_claim: {} } })).toBe(true);
+    // Present but without accept_claim, or with no claim types: PayPal does not offer it.
+    expect(accept({ links: [link("D", "accept-claim")], allowed_response_options: {} })).toBe(false);
+    expect(accept({ links: [link("D", "accept-claim")], allowed_response_options: { accept_claim: { accept_claim_types: [] } } })).toBe(false);
+    expect(accept({ links: [link("D", "accept-claim")], allowed_response_options: { accept_claim: null } as unknown as Dispute["allowed_response_options"] })).toBe(false);
     const resolved = disputeActions({ dispute_id: "D", status: "RESOLVED", dispute_life_cycle_stage: "INQUIRY", links: [] });
     expect(Object.values(resolved).some((x) => x.allowed)).toBe(false);
+  });
+});
+
+describe("disputeActions on the real sandbox case (links: self only)", () => {
+  const FIXTURE = JSON.parse(readFileSync(new URL("./fixtures/sandbox-dispute-20261101.json", import.meta.url), "utf8")) as Dispute;
+
+  it("allows no seller action, accept-claim included", () => {
+    const v = disputeActions(FIXTURE);
+    expect(v.accept_claim.allowed).toBe(false);
+    expect(v.send_message.allowed).toBe(false);
+    expect(v.provide_evidence.allowed).toBe(false);
+    expect(allowedActionList(FIXTURE)).toEqual([]);
+    expect(sellerActionState(FIXTURE).seller_action_available).toBe(false);
+  });
+
+  it("stays not allowed when PayPal also returns allowed_response_options, at any stage", () => {
+    for (const stage of ["INQUIRY", "CHARGEBACK"]) {
+      const d: Dispute = { ...FIXTURE, dispute_life_cycle_stage: stage, allowed_response_options: { accept_claim: { accept_claim_types: ["REFUND"] } } };
+      expect(disputeActions(d).accept_claim.allowed).toBe(false);
+      expect(allowedActionList(d)).toEqual([]);
+    }
   });
 });
 
@@ -78,6 +109,24 @@ describe("dispute proposals follow PayPal's allowed actions", () => {
     expect(accept.body.error.code).toBe("action_not_allowed");
     expect((await get("/api/proposals")).body.data).toEqual([]);
     expect((await get("/api/disputes/PP-D-DONE")).body.data.allowed_actions.accept_claim.allowed).toBe(false);
+  });
+
+  it("the real sandbox case (self link only, with allowed_response_options) shows and accepts no accept-claim", async () => {
+    const fixture = JSON.parse(readFileSync(new URL("./fixtures/sandbox-dispute-20261101.json", import.meta.url), "utf8")) as Dispute;
+    const id = fixture.dispute_id;
+    const state = { dispute: { ...fixture, allowed_response_options: { accept_claim: { accept_claim_types: ["REFUND"] } } } as Dispute };
+    const { post, get, pp } = await start(state);
+    const detail = (await get(`/api/disputes/${id}`)).body.data;
+    expect(detail.allowed_actions.accept_claim.allowed).toBe(false);
+    expect(detail.seller_action_available).toBe(false);
+    const pack = await post(`/api/disputes/${id}/evidence-pack`, { seller_notes: "I want to refund the buyer." });
+    expect(pack.body.data.proposals).toEqual({});
+    expect(Object.values(pack.body.data.allowed_actions as Record<string, { allowed: boolean }>).some((v) => v.allowed)).toBe(false);
+    expect(pack.body.data.pack.recommended_action).toBe("wait_for_paypal");
+    const accept = await post(`/api/disputes/${id}/accept-claim`, { note: "Refund" });
+    expect(accept.status).toBe(409);
+    expect(accept.body.error.code).toBe("action_not_allowed");
+    expect(pp.calls.filter((c) => c.method === "POST" && c.url.includes("/v1/customer/disputes/"))).toHaveLength(0);
   });
 
   it("re-checks right before execution: a dispute that moved on makes the proposal obsolete and sends nothing", async () => {
