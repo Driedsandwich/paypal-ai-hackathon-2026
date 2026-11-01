@@ -1,6 +1,6 @@
 import { renderTextPdf } from "../docs/simple-pdf.js";
 import type { AiProvider } from "../ai/provider.js";
-import { usdFromJpy } from "../money.js";
+import { PAYPAL_CURRENCIES, usdFromJpy } from "../money.js";
 import { carrierFor } from "../paypal/carriers.js";
 import type { CreateOrderRequest, DisputeEvidence, InvoiceDraft } from "../paypal/types.js";
 import type {
@@ -439,7 +439,9 @@ export function otherEvidenceFallback(payload: ProvideEvidencePayload): ProvideE
 }
 
 /** Amounts written in a text: next to a currency sign or code, or with two decimals. */
-const AMOUNT = /(?:US\$|\$|€|£|¥|\b[A-Z]{3}\b)\s?(\d[\d,]*(?:\.\d+)?)|(\d[\d,]*(?:\.\d+)?)\s?(?:\b[A-Z]{3}\b|dollars?\b|yen\b)|\b(\d[\d,]*\.\d{2})\b/g;
+// Only real currency codes count ("EMS 3 days" is not an amount).
+const CODES = PAYPAL_CURRENCIES.join("|");
+const AMOUNT = new RegExp(`(?:US\\$|\\$|€|£|¥|\\b(?:${CODES})\\b)\\s?(\\d[\\d,]*(?:\\.\\d+)?)|(\\d[\\d,]*(?:\\.\\d+)?)\\s?(?:\\b(?:${CODES})\\b|dollars?\\b|yen\\b)|\\b(\\d[\\d,]*\\.\\d{2})\\b`, "g");
 
 /** The amounts in a text, in hundredths (so 80, 80.00 and 80.0 compare equal). */
 export function amountsIn(text: string): number[] {

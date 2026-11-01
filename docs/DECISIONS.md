@@ -503,7 +503,8 @@ approve, PayPal sent the invoice).
 75. **Invoice note and total.** The note writer's input with shipping is `item_price` (item
     total), `shipping`, `total` (and `unit_price`, `quantity` when more than one); without
     shipping it is unchanged (`price`). The prompt says the buyer pays the total. Code check
-    after the answer (`noteMatchingTotal`): amounts are read next to a currency sign or code, or
+    after the answer (`noteMatchingTotal`): amounts are read next to a currency sign or a PayPal
+    currency code (so "EMS 3 days" is not an amount), or
     with two decimals; any amount that is not the unit price, item total, shipping or total →
     the app writes a plain note ("Thank you for your order of "…". The total is … (item … +
     shipping …). You can pay securely with PayPal."); amounts present but not the total → the
