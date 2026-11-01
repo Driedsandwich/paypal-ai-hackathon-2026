@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { api, money, type Journey, type Money, type Proposal } from "../api";
-import type { ViewProps } from "../App";
+import { go, type ViewProps } from "../App";
 import { CopyForDm, DecisionButtons, ErrorBox, Icon, ModelChip, PayloadDetails, ProposalOutcome, useAction } from "../components";
 
 interface DisputeRow {
@@ -11,9 +11,15 @@ interface DisputeRow {
   amount?: Money;
   create_time?: string;
   seller_response_due_date?: string;
+  /** False while PayPal's list does not return the case yet (known from a webhook or by ID). */
+  in_paypal_list?: boolean;
+  sale_id?: string;
 }
 interface DisputeDetail extends DisputeRow {
   allowed_actions: Record<"send_message" | "provide_evidence" | "accept_claim", { allowed: boolean; reason: string }>;
+  /** False when PayPal offers the seller no action now (e.g. links hold only "self"). */
+  seller_action_available: boolean;
+  notice?: string;
   messages: Array<{ posted_by?: string; time_posted?: string; content: string }>;
 }
 interface Pack {
@@ -31,17 +37,37 @@ interface PackResult {
   pack: Pack;
   proposals: { provide_evidence?: Proposal; send_message?: Proposal };
   allowed_actions: DisputeDetail["allowed_actions"];
+  seller_action_available: boolean;
+  notice?: string;
 }
 
 const human = (s?: string) => (s ?? "").replace(/_/g, " ").toLowerCase();
 
 export function DisputesView({ health, data, refresh, route }: ViewProps) {
   const [rows, setRows] = useState<DisputeRow[] | null>(null);
-  const load = useAction(async () => setRows((await api.get<{ disputes: DisputeRow[] }>("/api/disputes")).disputes));
+  const [warnings, setWarnings] = useState<string[]>([]);
+  const [caseId, setCaseId] = useState("");
+  const load = useAction(async () => {
+    const res = await api.get<{ disputes: DisputeRow[]; warnings?: string[] }>("/api/disputes");
+    setRows(res.disputes);
+    setWarnings(res.warnings ?? []);
+  });
   useEffect(() => {
     if (health.paypal.configured) void load.run();
   }, [health.paypal.configured]);
-  const saleOf = useMemo(() => new Map((data?.journeys ?? []).filter((j) => j.dispute).map((j) => [j.dispute!.dispute_id, j])), [data]);
+  // "Open a case by ID": PayPal's list can lag behind new cases, a read by id does not.
+  const open = useAction(async () => {
+    const d = await api.post<DisputeDetail>("/api/disputes/open", { dispute_id: caseId });
+    setCaseId("");
+    await Promise.all([load.run(), refresh()]);
+    go({ view: "disputes", arg: d.dispute_id });
+  });
+  const saleOf = useMemo(() => {
+    const byId = new Map((data?.journeys ?? []).map((j) => [j.id, j]));
+    const m = new Map((data?.journeys ?? []).filter((j) => j.dispute).map((j) => [j.dispute!.dispute_id, j]));
+    for (const r of rows ?? []) if (r.sale_id && !m.has(r.dispute_id) && byId.has(r.sale_id)) m.set(r.dispute_id, byId.get(r.sale_id)!);
+    return m;
+  }, [data, rows]);
   const selectedId = route.arg ?? rows?.[0]?.dispute_id;
 
   if (!health.paypal.configured) {
@@ -53,13 +79,24 @@ export function DisputesView({ health, data, refresh, route }: ViewProps) {
     );
   }
   return (
-    <div className="inbox disputes">
+    <div className={`inbox disputes ${route.arg ? "has-selection" : ""}`}>
       <section className="inbox-list" aria-label="Disputes">
         <div className="inbox-head">
           <h1 className="h2 serif">Disputes <span className="muted count-inline">{rows?.length ?? ""}</span></h1>
           <button className="btn btn-ghost btn-small" disabled={load.busy} onClick={() => void load.run()}>Refresh</button>
         </div>
+        <form className="open-case" onSubmit={(e: FormEvent) => { e.preventDefault(); void open.run(); }}>
+          <label className="search">
+            <Icon name="search" size={18} />
+            <span className="sr-only">Case ID</span>
+            <input value={caseId} maxLength={64} placeholder="Case ID, e.g. PP-R-ABC-12345678" autoComplete="off" spellCheck={false} onChange={(e) => setCaseId(e.target.value)} />
+          </label>
+          <button className="btn btn-outline btn-small" type="submit" disabled={open.busy || !caseId.trim()}>{open.busy ? "Opening…" : "Open a case by ID"}</button>
+        </form>
+        <p className="muted small open-case-hint">New sandbox cases can take a while to appear in PayPal's list. Paste the case ID from PayPal's Resolution Center to open it now.</p>
+        <ErrorBox error={open.error} />
         <ErrorBox error={load.error} />
+        {warnings.map((w) => <p key={w} className="warning" role="status"><Icon name="alert" size={16} /> {w}</p>)}
         {!rows && !load.error && <p className="loading" aria-busy="true">Loading…</p>}
         <ol className="rows">
           {(rows ?? []).map((d, i) => {
@@ -72,14 +109,18 @@ export function DisputesView({ health, data, refresh, route }: ViewProps) {
                   <span className="row-main">
                     <strong className="clamp1">{human(d.reason) || "Dispute"}</strong>
                     <span className="clamp1 jp">{j ? `${j.id} · ${j.title_ja ?? j.title_en}` : d.dispute_id}</span>
-                    <span className="muted clamp1">{human(d.status)} · {money(d.amount)}{d.seller_response_due_date ? ` · respond by ${d.seller_response_due_date.slice(0, 10)}` : ""}</span>
+                    <span className="muted clamp1">{human(d.status)} · {money(d.amount)}{d.seller_response_due_date ? ` · respond by ${d.seller_response_due_date.slice(0, 10)}` : ""}{d.in_paypal_list === false ? " · not in PayPal's list yet" : ""}</span>
                   </span>
                 </a>
               </li>
             );
           })}
         </ol>
-        {rows && rows.length === 0 && <p className="empty-note">No disputes. They appear here when a buyer opens one{health.paypal.offline ? " (use Simulate dispute on a paid journey)" : " (in the sandbox: Resolution Center of the buyer account)"}.</p>}
+        {rows && rows.length === 0 && (
+          <p className="empty-note">
+            No disputes. They appear here when a buyer opens one{health.paypal.offline ? " (use Simulate dispute on a paid journey)" : " (in the sandbox: Resolution Center of the buyer account). A new case can take several minutes to show up in PayPal's list; open it by its case ID above to see it at once"}.
+          </p>
+        )}
       </section>
       <section className="inbox-detail" aria-label="Dispute">
         {selectedId ? <DisputeCase key={selectedId} disputeId={selectedId} journey={saleOf.get(selectedId)} refresh={refresh} /> : <p className="empty-note">Select a dispute.</p>}
@@ -100,6 +141,17 @@ function DisputeCase({ disputeId, journey, refresh }: { disputeId: string; journ
   const [result, setResult] = useState<PackResult | null>(null);
   const [accept, setAccept] = useState<Proposal | null>(null);
   const set = (k: keyof typeof form) => (e: { target: { value: string } }) => setForm({ ...form, [k]: e.target.value });
+  // The linked journey may load after this case: fill in its facts where the seller typed nothing.
+  useEffect(() => {
+    if (!journey) return;
+    setForm((f) => ({
+      ...f,
+      invoice_id: f.invoice_id || journey.invoice_id || "",
+      tracking_number: f.tracking_number || journey.tracking?.number || "",
+      carrier: f.tracking_number ? f.carrier : (journey.tracking?.carrier ?? f.carrier),
+      shipped_date: f.shipped_date || journey.tracking?.at?.slice(0, 10) || "",
+    }));
+  }, [journey?.id]);
   const load = useAction(async () => setDetail(await api.get<DisputeDetail>(`/api/disputes/${encodeURIComponent(disputeId)}`)));
   useEffect(() => void load.run(), [disputeId]);
 
@@ -129,6 +181,15 @@ function DisputeCase({ disputeId, journey, refresh }: { disputeId: string; journ
       </header>
       <div className="detail-body">
         <ErrorBox error={load.error} />
+        {detail && !detail.seller_action_available && (
+          <div className="warning" role="status">
+            <Icon name="alert" />
+            <div>
+              <strong>{detail.notice ?? "No seller action is available right now."}</strong>
+              <br />You can still build the evidence pack and an English reply draft to keep ready. Nothing is sent to PayPal or the buyer.
+            </div>
+          </div>
+        )}
         {detail && (
           <div className="ledger">
             <div className="ledger-row"><span>Reason</span><span>{human(detail.reason)}</span></div>
@@ -157,8 +218,12 @@ function DisputeCase({ disputeId, journey, refresh }: { disputeId: string; journ
         </div>
         <label className="field"><span>Notes for the AI (Japanese or English)</span><textarea value={form.seller_notes} maxLength={2000} onChange={set("seller_notes")} /></label>
         <div className="decision">
-          <button className="btn btn-outline" disabled={acceptClaim.busy} onClick={() => void acceptClaim.run()}>Prepare: accept claim and refund…</button>
-          <button className="btn btn-primary" disabled={build.busy} onClick={() => void build.run()}>{build.busy ? "Building…" : "Build evidence pack with AI"}</button>
+          {detail?.allowed_actions.accept_claim.allowed && (
+            <button className="btn btn-outline" disabled={acceptClaim.busy} onClick={() => void acceptClaim.run()}>Prepare: accept claim and refund…</button>
+          )}
+          <button className="btn btn-primary" disabled={build.busy} onClick={() => void build.run()}>
+            {build.busy ? "Building…" : detail && !detail.seller_action_available ? "Build evidence pack with AI (read-only)" : "Build evidence pack with AI"}
+          </button>
         </div>
         <ErrorBox error={build.error ?? acceptClaim.error} />
         {accept && (
@@ -172,6 +237,7 @@ function DisputeCase({ disputeId, journey, refresh }: { disputeId: string; journ
         {result && (
           <div className="pack">
             <p className="ai-row"><ModelChip by={result.pack.generated_by} /> <span>Recommended: {human(result.pack.recommended_action)}</span></p>
+            {!result.seller_action_available && <p className="muted small">{result.notice ?? "No seller action is available right now."} This pack is read-only: there is nothing to approve.</p>}
             {result.pack.unverified_facts.length > 0 && (
               <div className="error" role="alert"><Icon name="alert" /><div>Check before sending: not in the PayPal data or your inputs: {result.pack.unverified_facts.join(", ")}</div></div>
             )}
@@ -186,7 +252,13 @@ function DisputeCase({ disputeId, journey, refresh }: { disputeId: string; journ
             {result.proposals.provide_evidence ? (
               <ProposalBlock title="Submit evidence" proposal={result.proposals.provide_evidence} text={result.pack.evidence_notes} refresh={refresh} />
             ) : (
-              <p className="muted small">No evidence proposal: {result.allowed_actions.provide_evidence.reason}</p>
+              <>
+                <p className="muted small">No evidence proposal: {result.allowed_actions.provide_evidence.reason}</p>
+                <div className="dm">
+                  <div className="dm-head"><span className="muted">Evidence notes (kept ready, not sent)</span></div>
+                  <p className="pre">{result.pack.evidence_notes}</p>
+                </div>
+              </>
             )}
             {result.proposals.send_message ? (
               <ProposalBlock title="Send reply to the buyer" proposal={result.proposals.send_message} text={result.pack.reply_draft} refresh={refresh} />

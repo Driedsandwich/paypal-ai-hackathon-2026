@@ -102,7 +102,22 @@ export interface Journey {
   steps: Array<{ n: number; name: string; state: "done" | "current" | "todo"; label: string }>;
   callout?: { step: number; kind: "proposal"; proposal: Proposal } | { step: number; kind: "action"; actions: JourneyAction[]; problem?: Proposal };
   hint?: { step: number; text: string };
-  dispute?: { dispute_id: string; status?: string; reason?: string; stage?: string; amount?: Money; due?: string; open: boolean; from_step: number; proposals: Proposal[] };
+  dispute?: {
+    dispute_id: string;
+    status?: string;
+    reason?: string;
+    stage?: string;
+    amount?: Money;
+    due?: string;
+    open: boolean;
+    from_step: number;
+    proposals: Proposal[];
+    /** False while PayPal's list does not return the case yet. */
+    in_paypal_list?: boolean;
+    /** Known only when the case was just read by id: false = PayPal offers no seller action. */
+    seller_action_available?: boolean;
+    notice?: string;
+  };
   can_simulate_dispute: boolean;
   activity: Array<{ at: string; text: string }>;
 }

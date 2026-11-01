@@ -345,13 +345,17 @@ function DisputeBranch({ journey: j, health, refresh }: { journey: Journey; heal
               {d.stage ? ` · ${d.stage.toLowerCase()}` : ""}
             </span>
             {d.due && d.open && <span className="warn-text"><Icon name="alert" size={14} /> Respond by {d.due.slice(0, 10)}</span>}
+            {d.open && d.seller_action_available === false && <span className="warn-text">{d.notice ?? "No seller action is available right now."}</span>}
+            {d.in_paypal_list === false && <span className="small">Case {d.dispute_id} (not in PayPal's list yet)</span>}
             {d.proposals.map((p) => (
               <div key={p.id} className="branch-proposal">
                 <span>{KIND_LABEL[p.kind]}</span>
                 <DecisionButtons proposal={p} onDone={() => void refresh()} />
               </div>
             ))}
-            {d.open && d.proposals.length === 0 && <a className="btn btn-outline btn-small" href={`#disputes/${d.dispute_id}`}>Build evidence pack</a>}
+            {d.open && d.proposals.length === 0 && (
+              <a className="btn btn-outline btn-small" href={`#disputes/${d.dispute_id}`}>{d.seller_action_available === false ? "Evidence pack (read-only)" : "Build evidence pack"}</a>
+            )}
           </div>
         </div>
       </div>
