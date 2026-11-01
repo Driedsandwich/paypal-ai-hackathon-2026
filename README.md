@@ -224,7 +224,8 @@ Demo video and screenshots go in [`docs/media/`](docs/media/).
 ## Pre-existing components
 
 Third-party code, assets, APIs and services used by this project (anything not created
-during the submission period). Versions are pinned exactly in `package.json`.
+during the submission period). Dependencies added in this build are pinned to exact versions in
+`package.json`; the scaffold's dev tools (`typescript`, `vitest`, `@types/node`) keep their caret ranges.
 
 | Component | License / terms | How it is used |
 | --- | --- | --- |

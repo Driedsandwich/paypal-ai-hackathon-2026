@@ -11,7 +11,10 @@ open, or where the spec's preferred option did not work. Newest pass last.
    reached from the build environment (DNS blocked by its network policy). I used PayPal's
    official OpenAPI specifications (`paypal/paypal-rest-api-specifications` on GitHub, the
    source of the API reference on developer.paypal.com) for every request and response shape.
-   Three multipart dispute bodies are only partly described there, so for those:
+   This includes the Orders v2 `payment_source.paypal.experience_context` fields and enums,
+   item `category`, `amount.breakdown.item_total`, the three carrier enums and the disputes
+   `tracking_info` fields. Three multipart dispute bodies are only partly described there, so
+   for those:
    - `provide-evidence`: the spec confirms `multipart/form-data` with file parts named
      `evidence-file`. The JSON part name `input` (holding `{ "evidences": [...] }`) comes from a
      third-party mirror of the PayPal docs. **Needs re-checking on developer.paypal.com.**

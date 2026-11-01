@@ -84,4 +84,9 @@ with the banner; I checked this in headless Chromium (screenshots not committed)
    sandbox merchant account. Fine for a sandbox demo, or do you want a simple demo passcode?
 6. **Shipping:** invoices carry no shipping charge or shipping address yet (orders take the
    buyer's PayPal address). Should shipping be a separate invoice line?
-7. **Product name:** "Okuri" is used as the working title in the UI and README. Keep it?
+7. **Abuse of the return URL:** `GET /paypal/return?token=…` queues a capture proposal (one per
+   order id), and the in-memory store keeps at most 500 proposals, evicting finished ones first
+   and then the oldest pending ones. Someone calling that URL with many fake tokens could push
+   real pending proposals out. Acceptable for a sandbox demo, or should I check the order with
+   PayPal before queueing?
+8. **Product name:** "Okuri" is used as the working title in the UI and README. Keep it?
