@@ -16,6 +16,7 @@ import { AiLimiter } from "./limits/rate-limit.js";
 import { DemoLimits } from "./limits/demo-limits.js";
 import { PayPalReadCache } from "./paypal/read-cache.js";
 import { clientAddress, limitKey } from "./http/client-address.js";
+import { ensureSession, isSecureRequest } from "./http/session.js";
 import { PayPalApiError, PayPalClient, PayPalTimeoutError, handlePayPalWebhook, type PayPalConfig } from "./paypal/index.js";
 import { createPayPalExecutor } from "./proposals/actions.js";
 import { OrderRegistry } from "./proposals/order-registry.js";
@@ -161,6 +162,8 @@ export function createApp(options: AppOptions = {}): Server {
       if (url.pathname === "/paypal/return" || url.pathname === "/paypal/cancel") {
         return await handlePayPalReturn(req, res, url, deps, () => deps.limits.takeRead(limitKey(clientAddress(req, deps.settings.trustProxyHops))));
       }
+      // Give the visitor a demo session as soon as the UI loads, before any API call.
+      ensureSession(req, res, isSecureRequest(req, deps.settings.publicBaseUrl, deps.settings.trustProxyHops));
       return serveStatic(deps.staticDir, url.pathname, res);
     } catch (err) {
       return sendError(res, err, deps.log);

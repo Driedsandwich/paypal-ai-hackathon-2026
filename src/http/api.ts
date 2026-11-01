@@ -21,7 +21,7 @@ import type { SeedDemoDataPayload } from "../proposals/actions.js";
 import { buildInvoicePayload, buildOrderPayload } from "../agent/tasks.js";
 import type { OrderRegistry } from "../proposals/order-registry.js";
 import type { ReminderLedger } from "../proposals/reminder-ledger.js";
-import { PROPOSAL_STATUSES, type Proposal, type ProposalKind, type ProposalStatus, type ProposalStore } from "../proposals/store.js";
+import { PROPOSAL_STATUSES, ProposalError, type Proposal, type ProposalKind, type ProposalStatus, type ProposalStore } from "../proposals/store.js";
 import { clientAddress, limitKey } from "./client-address.js";
 import { disputeDetail, disputeRow, invoiceDetail, invoiceRow, orderView, publicPack, publicProposal as toPublic } from "./dto.js";
 import { queueCapture } from "./paypal-return.js";
@@ -451,7 +451,8 @@ const ROUTES: Route[] = [
       const { req, res, deps, params, session } = ctx;
       await readJsonBody(req, MAX_API_BODY); // body ignored: the stored payload is what runs
       const found = deps.proposals.get(params[0]!, session);
-      if (!found || found.status !== "pending") return ok(res, publicProposal(ctx, await deps.proposals.approve(params[0]!, session))); // throws 404/409
+      if (!found) throw new ProposalError(`proposal ${params[0]} not found`, "not_found");
+      if (found.status !== "pending") throw new ProposalError(`proposal ${found.id} is ${found.status}, not pending`, "not_pending");
       requirePayPal(deps);
       const key = limitKey(ctx.address);
       // All checks before the first await, so they hold for this execution (F2).

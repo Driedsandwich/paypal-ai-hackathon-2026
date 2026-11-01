@@ -305,6 +305,11 @@ describe("demo sessions (F1)", () => {
     expect((await secure.get("/api/proposals")).headers.get("set-cookie")).toMatch(/; Secure$/);
   });
 
+  it("loading the UI already sets the session cookie", async () => {
+    const { get } = await start();
+    expect((await get("/")).headers.get("set-cookie")).toMatch(/^okuri_sid=/);
+  });
+
   it("keeps the cookie once set and ignores malformed ones", async () => {
     const { get, cookie, base } = await start();
     await get("/api/proposals");
