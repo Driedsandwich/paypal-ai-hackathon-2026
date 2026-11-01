@@ -32,7 +32,8 @@ import { buildJourney, journeyCounts, saleFromInvoice } from "../journeys/journe
 import type { OfflineWorlds } from "../journeys/offline-world.js";
 import { recordExecution } from "../journeys/record.js";
 import { COUNTRIES, isCountry, saleMarker, type Sale, type SaleRegistry } from "../journeys/sales.js";
-import { knownDisputes, readAndRegister, saleOfDispute as linkedSale, type DisputeRegistry, type DisputeView } from "../journeys/disputes.js";
+import { knownDisputes, parseDisputeId, readAndRegister, saleOfDispute as linkedSale, type DisputeRegistry, type DisputeView } from "../journeys/disputes.js";
+import { PayPalApiError } from "../paypal/client.js";
 
 export interface ApiDeps {
   settings: AppSettings;
@@ -475,6 +476,33 @@ const ROUTES: Route[] = [
       const { items, listError } = await knownDisputes(discoveryDeps(deps), requirePayPal(ctx));
       if (listError !== undefined && items.length === 0) throw listError;
       ok(res, { disputes: items.map((v) => knownDisputeRow(deps, v)), warnings: listError !== undefined ? [readWarning(listError, "PayPal's dispute list")] : [] });
+    },
+  },
+  {
+    // "Open a case by ID": new sandbox cases can take minutes to appear in PayPal's list, but
+    // they can be read by id at once. Reads the case and registers it for every page.
+    method: "POST",
+    pattern: /^\/api\/disputes\/open$/,
+    paypalRead: true,
+    handler: async (ctx) => {
+      const { req, res, deps } = ctx;
+      const body = z.object({ dispute_id: z.string().max(200) }).parse(await readJsonBody(req, MAX_API_BODY));
+      const id = parseDisputeId(body.dispute_id);
+      if (!id) throw new HttpError(400, "invalid_dispute_id", "Paste the case ID as PayPal shows it, for example PP-R-ABC-12345678 or PP-D-12345.");
+      const paypal = requirePayPal(ctx);
+      deps.limits.takeDisputeLookup(ctx.session, limitKey(ctx.address));
+      let d;
+      try {
+        d = await readAndRegister(discoveryDeps(deps), paypal, id, "by_id");
+      } catch (err) {
+        if (err instanceof PayPalApiError && (err.status === 404 || err.status === 403)) {
+          throw new HttpError(404, "dispute_not_found", `PayPal has no case ${id} for this demo's sandbox seller account. Check the ID: it has to be a case opened against a payment to this seller.`, err.debugId ? { paypal: { debugId: err.debugId } } : {});
+        }
+        throw err;
+      }
+      const sale = saleOfDispute(deps, d);
+      const entry = deps.disputes.get(d.dispute_id);
+      ok(res, { ...disputeDetail(d), ...(sale ? { sale_id: sale.id } : {}), ...(entry ? { sources: entry.sources } : {}) });
     },
   },
   {

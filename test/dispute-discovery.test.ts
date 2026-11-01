@@ -321,3 +321,75 @@ describe("dispute discovery: verified webhooks", () => {
     expect(journey.dispute).toMatchObject({ dispute_id: CASE_ID });
   });
 });
+
+describe("dispute discovery: Open a case by ID", () => {
+  it("validates the id, reads the case from PayPal, registers it and links it to the journey", async () => {
+    const pp = lagging({ listed: false, dispute: FIXTURE });
+    const disputes = new DisputeRegistry();
+    const app = await start({ settings: LIVE, paypalConfig: FAKE_CONFIG, paypal: pp.client, disputes });
+    await app.get("/api/journeys");
+
+    // Not a case id: refused before any PayPal call.
+    const reads = () => disputeReads(pp.calls).length;
+    for (const bad of ["", "INV2-FIXTURE", "PP-R-EMU-1/../../x", "PP-R-EMU-10195761; DROP"]) {
+      const r = await app.post("/api/disputes/open", { dispute_id: bad });
+      expect(r.status).toBe(400);
+      expect(r.body.error.code).toBe("invalid_dispute_id");
+    }
+    expect((await app.post("/api/disputes/open", {})).status).toBe(400);
+    expect(reads()).toBe(0);
+
+    // Unknown at PayPal: 404, nothing registered.
+    const unknown = await app.post("/api/disputes/open", { dispute_id: "PP-D-99999" });
+    expect(unknown.status).toBe(404);
+    expect(unknown.body.error).toMatchObject({ code: "dispute_not_found", paypal: { debugId: "dbg-404" } });
+    expect(disputes.size).toBe(0);
+
+    // The sandbox case, pasted with spaces and in lower case.
+    const opened = await app.post("/api/disputes/open", { dispute_id: `  ${CASE_ID.toLowerCase()} ` });
+    expect(opened.status).toBe(200);
+    expect(opened.body.data).toMatchObject({ dispute_id: CASE_ID, sale_id: "OK-2042", sources: ["by_id"], stage: "INQUIRY", amount: { currency_code: "USD", value: "12.00" } });
+    expect(opened.body.data.messages[0].content).toMatch(/has not arrived yet/);
+    expect(pp.calls.at(-1)!.url).toBe(`${SANDBOX}/v1/customer/disputes/${CASE_ID}`);
+
+    // Now every visitor finds it in the list and on the journey, although PayPal's list is still empty.
+    const other = app.other();
+    const rows = (await other.get("/api/disputes")).body.data.disputes;
+    expect(rows).toEqual([expect.objectContaining({ dispute_id: CASE_ID, in_paypal_list: false, sale_id: "OK-2042" })]);
+    const journey = (await other.get("/api/journeys")).body.data.journeys.find((j: any) => j.id === "OK-2042");
+    expect(journey.dispute).toMatchObject({ dispute_id: CASE_ID, open: true });
+  });
+
+  it("is limited per session and per address", async () => {
+    const pp = lagging({ listed: false, dispute: FIXTURE });
+    const app = await start({ settings: loadSettings({ LIST_CACHE_SECONDS: "0", TRUST_PROXY_HOPS: "1" }), paypalConfig: FAKE_CONFIG, paypal: pp.client });
+    const from = (ip: string) => ({ "Content-Type": "application/json", "X-Forwarded-For": ip });
+    const open = (v: typeof app | ReturnType<typeof app.other>, ip: string) => v.post("/api/disputes/open", { dispute_id: CASE_ID }, from(ip));
+    for (let i = 0; i < 10; i++) expect((await open(app, "203.0.113.1")).status).toBe(200);
+    const limited = await open(app, "203.0.113.1");
+    expect(limited.status).toBe(429);
+    expect(limited.body.error.code).toBe("dispute_lookup_rate_limited");
+    expect(limited.headers.get("retry-after")).toBeTruthy();
+    // Same browser from another address: still limited (per session).
+    expect((await open(app, "203.0.113.2")).status).toBe(429);
+    // Another browser from the first address: limited (per address); from elsewhere: fine.
+    const other = app.other();
+    expect((await open(other, "203.0.113.1")).status).toBe(429);
+    expect((await open(other, "203.0.113.3")).status).toBe(200);
+    expect(disputeReads(pp.calls)).toHaveLength(11);
+  });
+
+  it("answers 503 without PayPal and works on the visitor's own simulator in the offline demo", async () => {
+    const none = await start({ settings: loadSettings({}) });
+    expect((await none.post("/api/disputes/open", { dispute_id: CASE_ID })).status).toBe(503);
+    await close?.();
+    const disputes = new DisputeRegistry();
+    const app = await start({ settings: loadSettings({ PAYPAL_OFFLINE_DEMO: "true" }), disputes });
+    const id = (await app.get("/api/journeys")).body.data.journeys.find((j: any) => j.dispute).dispute.dispute_id;
+    const opened = await app.post("/api/disputes/open", { dispute_id: id });
+    expect(opened.status).toBe(200);
+    expect(opened.body.data.sale_id).toMatch(/^OK-/);
+    expect(disputes.size).toBe(0);
+    expect((await app.other().post("/api/disputes/open", { dispute_id: id })).status).toBe(404);
+  });
+});

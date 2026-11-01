@@ -3,8 +3,15 @@ import type { ProposalKind } from "../proposals/store.js";
 import { DailyCounter, LimitError, Semaphore, SlidingWindowLimiter } from "./limits.js";
 
 /**
+ * "Open a case by ID" lookups per session and per address per window (pass 3a), on top of the
+ * PayPal read limit. Each lookup reads PayPal once and may add to the shared dispute registry.
+ */
+export const DISPUTE_LOOKUP_LIMIT = 10;
+
+/**
  * Limits on everything that touches the shared PayPal sandbox account (F2), in addition to
- * the AI limits. All values come from env (see README). In memory, per process.
+ * the AI limits. All values come from env (see README), except DISPUTE_LOOKUP_LIMIT. In
+ * memory, per process.
  */
 export class DemoLimits {
   readonly windowMinutes: number;
@@ -13,6 +20,8 @@ export class DemoLimits {
   private readonly approvalsBySession: SlidingWindowLimiter;
   private readonly approvalsByAddress: SlidingWindowLimiter;
   private readonly readsByAddress: SlidingWindowLimiter;
+  private readonly lookupsBySession: SlidingWindowLimiter;
+  private readonly lookupsByAddress: SlidingWindowLimiter;
   private readonly webhookByAddress: SlidingWindowLimiter;
   private readonly webhookGlobal: SlidingWindowLimiter;
   private readonly seedBySession: SlidingWindowLimiter;
@@ -29,6 +38,8 @@ export class DemoLimits {
     this.approvalsBySession = new SlidingWindowLimiter(settings.approvalRateLimit, windowMs, now);
     this.approvalsByAddress = new SlidingWindowLimiter(settings.approvalRateLimit, windowMs, now);
     this.readsByAddress = new SlidingWindowLimiter(settings.paypalReadRateLimit, windowMs, now);
+    this.lookupsBySession = new SlidingWindowLimiter(DISPUTE_LOOKUP_LIMIT, windowMs, now);
+    this.lookupsByAddress = new SlidingWindowLimiter(DISPUTE_LOOKUP_LIMIT, windowMs, now);
     this.webhookByAddress = new SlidingWindowLimiter(settings.webhookRateLimit, 60_000, now);
     this.webhookGlobal = new SlidingWindowLimiter(settings.webhookGlobalRateLimit, 60_000, now);
     this.seedBySession = new SlidingWindowLimiter(1, settings.seedSessionIntervalMinutes * 60_000, now);
@@ -72,6 +83,13 @@ export class DemoLimits {
       throw new LimitError(429, "read_rate_limited", `Too many PayPal lookups from your address (limit ${this.readsByAddress.max} per ${this.windowMinutes} minutes). Please wait a little and try again.`, wait);
     }
     this.readsByAddress.record(address);
+  }
+
+  /** One "Open a case by ID" lookup (per session and per address). */
+  takeDisputeLookup(session: string, address: string): void {
+    this.both(this.lookupsBySession, this.lookupsByAddress, session, address, 1, "dispute_lookup_rate_limited", "case lookups");
+    this.lookupsBySession.record(session);
+    this.lookupsByAddress.record(address);
   }
 
   takeWebhook(address: string): void {
