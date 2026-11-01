@@ -391,3 +391,70 @@ no pull request, nothing merged, no dependencies added, no new env names, no cre
 2. Should a missing primary key with a configured fallback use the fallback as the primary
    instead of the offline AI? (Now: offline AI, as you asked, and the fallback is not used.)
 3. Should the chat agent's invoice tools accept shipping too?
+
+## Pass 5 (after the hosted end-to-end check): 2026-11-01
+
+The hosted demo (<https://okuri.onrender.com>, real PayPal sandbox, Claude primary) was used end
+to end. Five problems, fixed with the smallest safe change each, in the order 2, 1, 4, 3, 5.
+Branch `claude/build-v1`, pushed after each item; no pull request, nothing merged, no
+dependencies added, no new env names, no credentials.
+
+### Result
+
+- `npm run typecheck`, `npm test`, `npm run build`, `npm run prepublish-check` pass after every
+  commit (Node 22 locally); the full test suite also passes on Node 20.20.
+- **Tests: 251 before (22 files), 270 after (26 files).** New: `test/sendable-text.test.ts` (6),
+  `test/evidence-type-fallback.test.ts` (6), `test/tracking-permission.test.ts` (2),
+  `test/invoice-note.test.ts` (5). No existing test changed.
+
+### What changed
+
+| Item | Change | Where |
+| --- | --- | --- |
+| 2 Sendable texts | The model is told which files are attached (computed before the call) and that seller to-dos go in `missing_information`, never in `evidence_notes` or `reply_draft` (system prompt and schema descriptions). After it answers, bracketed text, `(Seller: …)` notes and sentences claiming an attachment that is not attached are removed from both texts and listed in `missing_information`; nothing sendable left → the answer is refused. The fact check runs on the repaired text, and the repaired text is what the proposals send. | `src/agent/sendable-text.ts`, `src/agent/tasks.ts`, `src/agent/schemas.ts` |
+| 1 Evidence type | provide-evidence refused with a 4xx and issue `EVIDENCE_TYPE_IS_NOT_ALLOWED`: the proposal stays failed (message says so, PayPal's status, issue and debug_id kept), and a new pending proposal of type OTHER carries the notes plus "Shipment: carrier …, tracking number …" (attachments unchanged). It needs its own approval and is never offered for an OTHER submission. Returned as `follow_up_proposal` by the approve route and shown under the failed one on the case. | `src/proposals/actions.ts`, `src/agent/tasks.ts` (`otherEvidenceFallback`), `src/http/api.ts`, `src/server.ts`, `web/src/views/Disputes.tsx` |
+| 4 Tracking 403 | trackers-batch answering 403 → the proposal's message is "PayPal did not allow tracking for this invoice payment: the PayPal app needs the shipping trackers permission", PayPal's status, name and debug_id kept. Payment path unchanged. README Setup: one sentence naming the scope. | `src/proposals/actions.ts`, `src/server.ts`, `README.md` |
+| 3 Invoice note | With shipping, the note writer gets `item_price`, `shipping` and `total` (plus `unit_price` and `quantity` for more than one) and is told the buyer pays the total. After it answers, a note with an amount PayPal does not bill is replaced by a plain note with the total; a note naming an amount but not the total gets "Total including shipping: … (item … + shipping …)" appended. Used by invoices and payment links. | `src/agent/tasks.ts` |
+| 5 Case after action | After an executed or obsolete dispute action, the approve route reads the case from PayPal (not through the cache), registers it and returns it as `dispute`; the case view shows it at once and reloads the list. | `src/http/api.ts`, `web/src/views/Disputes.tsx`, `web/src/api.ts` |
+
+### How I checked things
+
+- Tests with a fake PayPal: the CHARGEBACK case of the hosted check
+  (`test/fixtures/sandbox-evidence-type-refused-20261101.json`) refusing PROOF_OF_FULFILLMENT
+  with 400 and with 422, accepting OTHER and moving to UNDER_REVIEW; the follow-up proposal,
+  its approval and the multipart body sent; no follow-up for a refused OTHER; the case read
+  right after the write (a GET after the POST), then shown as UNDER_REVIEW by the approve
+  response, *Open a case by ID*, the detail and the list. An AI answer shaped like the hosted one
+  (`[Seller: attach …]`, "Attached: proof of shipment …") with and without the invoice PDF.
+  trackers-batch answering 403 NOT_AUTHORIZED. The 80.00 + 15.00 USD note.
+- The UI changes (follow-up block, case refresh) were type-checked and built, but **not**
+  clicked through in a browser this pass.
+
+### Not done, or only partly, and why
+
+- **The error body of the evidence refusal is rebuilt, not recorded.** The report gave the
+  status class (4xx), the issue code and that a debug_id came back; the fixture uses PayPal's
+  standard error format with those values, and tests cover 400 and 422. Detection uses only
+  the issue code in `details[].issue`. If PayPal puts the code elsewhere (for example only in
+  `name`), the follow-up is not offered; please record the raw body next time.
+- Why PayPal refused PROOF_OF_FULFILLMENT on a case that listed it as requested is not known;
+  the app still sends PROOF_OF_FULFILLMENT first when tracking is given (the follow-up is the
+  safety net). Sending OTHER from the start would lose `tracking_info` on cases that accept it.
+- The sendable-text repair is pattern-based: it catches bracketed text, `(Seller: …)` notes
+  and attachment claims (attach, enclosed, "please find"). Other phrasings of seller
+  instructions ("Remember to add …") are only covered by the prompt. Any square-bracketed text
+  is removed, including a legitimate one, which buyer-facing notes should not need.
+- The 403 mapping cannot grant the permission: tracking for invoice payments on the hosted demo
+  works only after the scope is enabled for the sandbox app (please check the app's features in
+  the developer dashboard). Order payments use Orders v2 `/track` and are not affected.
+- The chat agent's dispute tools do not offer the OTHER follow-up and do not return the re-read
+  case (the case view and Approvals do).
+
+### Open questions for you
+
+1. Please enable the shipping trackers permission for the sandbox app (or confirm it cannot be
+   enabled) and approve tracking for one paid invoice again.
+2. Next time PayPal refuses an evidence type, please copy the raw error body (with debug_id)
+   into the repository so the fixture can be replaced by a recording.
+3. Should the evidence proposal send OTHER from the start for CHARGEBACK cases of reason
+   MERCHANDISE_OR_SERVICE_NOT_RECEIVED, instead of trying PROOF_OF_FULFILLMENT first?

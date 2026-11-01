@@ -464,3 +464,53 @@ approve, PayPal sent the invoice).
     Studio API) fallback. Build: Claude Code for implementation and fixes, OpenAI Codex for the
     visual design mockups and an independent code review (as stated by the owner). Hosted URL
     `https://okuri.onrender.com` at the top with the about-a-minute wake-up note.
+
+## Pass 5 (2026-11-01): after the hosted end-to-end check
+
+72. **Texts sent as they are hold no seller to-dos and no false attachment claims.**
+    `evidence_notes` and `reply_draft` go to PayPal or the buyer unchanged, so: the model gets
+    the attachment list (name and description; today only the invoice summary PDF, described
+    "with the carrier and tracking number" when tracking is given) in its input; the system
+    prompt and the JSON Schema descriptions say seller to-dos belong in `missing_information`.
+    After the answer, code repairs rather than rejects (a second model call would cost budget
+    and could fail the same way): any `[…]` text, `(Seller: …)` / `(Note to seller: …)` /
+    `(TODO …)` notes, and any sentence that claims an attachment (attach…, enclos…, "please
+    find") when nothing is attached or naming something no attachment covers (receipt,
+    screenshot, photo, proof, tracking, label, signature, shipment, delivery, invoice, matched
+    against the attachment's name and description) are removed and listed in
+    `missing_information` (max 10 entries, 300 characters each). If fewer than 10 characters are
+    left, the answer is refused (`AgentOutputError`). The `summary` is not repaired (the offline
+    provider writes "[offline demo]" there, and it is not sent).
+73. **Refused evidence type → a new OTHER proposal.** When provide-evidence fails with a 4xx
+    whose `details[].issue` is `EVIDENCE_TYPE_IS_NOT_ALLOWED` and the submission had a type
+    other than OTHER, the executor raises `PayPalRefusalError`; the proposal is `failed` with a
+    message naming the refused type, PayPal's status, issues and debug_id, and
+    `refused_evidence_type`. The approve route then proposes (same owner, sale and limits) the
+    same submission as one OTHER evidence: the earlier notes, then one line per shipment
+    "Shipment: carrier <name>, tracking number <n>[, tracking page <url>]." (kept whole; the notes
+    are shortened to fit 2000 characters), attachments unchanged. The failed proposal's error
+    gets `follow_up_proposal_id`; the response carries `follow_up_proposal`. If the proposal
+    limits refuse it, the response has `warnings` instead (the approval itself is not turned
+    into a 429). An OTHER submission that is refused gets no follow-up. The first proposal
+    still uses PROOF_OF_FULFILLMENT with `tracking_info` when tracking is given (see the
+    build log, pass 5, open question 3).
+74. **Tracking permission.** trackers-batch answering HTTP 403 → `PayPalRefusalError` with
+    "PayPal did not allow tracking for this invoice payment: the PayPal app needs the shipping
+    trackers permission"; PayPal's status, name and debug_id stay in `error.paypal`. Errors
+    inside a 200 answer (`errors[]`) and other statuses are unchanged. The payment path is not
+    switched. README Setup names the scope
+    `https://uri.paypal.com/services/shipping/trackers/readwrite` in one sentence.
+75. **Invoice note and total.** The note writer's input with shipping is `item_price` (item
+    total), `shipping`, `total` (and `unit_price`, `quantity` when more than one); without
+    shipping it is unchanged (`price`). The prompt says the buyer pays the total. Code check
+    after the answer (`noteMatchingTotal`): amounts are read next to a currency sign or code, or
+    with two decimals; any amount that is not the unit price, item total, shipping or total →
+    the app writes a plain note ("Thank you for your order of "…". The total is … (item … +
+    shipping …). You can pay securely with PayPal."); amounts present but not the total → the
+    total line is appended; no amounts → unchanged. Applies to invoices and payment-link DMs.
+76. **Re-read after a dispute action.** After an `executed` or `obsolete` provide-evidence,
+    send-message or accept-claim, the approve route calls `readAndRegister` (a direct
+    `getDispute`, not the 30-second cache), clears the read cache and returns `dispute` (the
+    same DTO as `GET /api/disputes/{id}`, with `sale_id`). A failing read adds
+    `dispute_warning` and does not change the proposal. The case view replaces its detail with
+    it (or reads again) and reloads the dispute list.
