@@ -1,6 +1,6 @@
 import { renderTextPdf } from "../docs/simple-pdf.js";
 import type { AiProvider } from "../ai/provider.js";
-import { formatMinor, multiplyMinor, normalizeAmount, toMinor, usdFromJpy } from "../money.js";
+import { usdFromJpy } from "../money.js";
 import { carrierFor } from "../paypal/carriers.js";
 import type { CreateOrderRequest, DisputeEvidence, InvoiceDraft } from "../paypal/types.js";
 import type {
@@ -17,6 +17,7 @@ import {
   BuyerMessageAiSchema,
   EvidencePackAiSchema,
   ListingAiSchema,
+  listingTotals,
   NudgeAiSchema,
   type Buyer,
   type EvidenceInput,
@@ -277,7 +278,8 @@ export function buildInvoicePayload(
   reference?: string,
 ): CreateAndSendInvoicePayload {
   const currency = listing.price.currency_code;
-  const unit = normalizeAmount(listing.price.value, currency); // throws MoneyError if invalid
+  const totals = listingTotals(listing); // throws MoneyError if invalid (price or shipping)
+  const unit = totals.unit;
   const invoice: InvoiceDraft = {
     detail: {
       currency_code: listing.price.currency_code,
@@ -295,6 +297,8 @@ export function buildInvoicePayload(
         unit_of_measure: "QUANTITY",
       },
     ],
+    // Invoicing v2 shipping charge, same currency; PayPal adds it to the invoice total.
+    ...(totals.shipping ? { amount: { breakdown: { shipping: { amount: { currency_code: currency, value: totals.shipping } } } } } : {}),
   };
   // The AI note goes in invoice.detail.note (supported, shown to the buyer). The send
   // notification carries flags only: PayPal does not honor a custom subject or note there.
@@ -313,9 +317,7 @@ export function buildOrderPayload(
   customId?: string,
 ): CreatePaymentLinkPayload {
   const currency = listing.price.currency_code;
-  const unitMinor = toMinor(listing.price.value, currency); // throws MoneyError if invalid
-  const unit = formatMinor(unitMinor, currency);
-  const total = formatMinor(multiplyMinor(unitMinor, listing.quantity), currency);
+  const { unit, item_total: itemTotal, shipping, total } = listingTotals(listing); // throws MoneyError if invalid
   const base = config.publicBaseUrl.replace(/\/+$/, "");
   const order: CreateOrderRequest = {
     intent: "CAPTURE",
@@ -326,7 +328,7 @@ export function buildOrderPayload(
         amount: {
           currency_code: currency,
           value: total,
-          breakdown: { item_total: { currency_code: currency, value: total } },
+          breakdown: { item_total: { currency_code: currency, value: itemTotal }, ...(shipping ? { shipping: { currency_code: currency, value: shipping } } : {}) },
         },
         items: [
           {

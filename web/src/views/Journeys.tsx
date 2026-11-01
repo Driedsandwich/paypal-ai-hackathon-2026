@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { api, money, providerLabel, shortTime, type Health, type Journey, type JourneyAction, type Proposal } from "../api";
+import { api, itemPlusShipping, money, providerLabel, shortTime, type Health, type Journey, type JourneyAction, type Proposal } from "../api";
 import { go, type ViewProps } from "../App";
 import { CopyForDm, DecisionButtons, ErrorBox, Icon, KIND_LABEL, ProposalOutcome, ProposalSummary, useAction } from "../components";
 
@@ -254,7 +254,9 @@ function ActionCallout({ journey: j, health, refresh, actions, problem }: { jour
       {actions.includes("prepare_invoice") && (
         <>
           <p className="callout-title clamp2">{j.title_en}</p>
-          <p className="muted small">Drafted by {providerLabel(j.drafted_by?.provider)} · {money(j.listing?.price)}</p>
+          <p className="muted small">
+            Drafted by {providerLabel(j.drafted_by?.provider)} · {j.listing?.shipping ? itemPlusShipping(j.listing.price, j.listing.shipping) : money(j.listing?.price)}
+          </p>
           <label className="field">
             <span>Buyer</span>
             <select value={buyer} onChange={(e) => setBuyer(e.target.value)}>

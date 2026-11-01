@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { moneyProblem, PAYPAL_CURRENCIES } from "../money.js";
+import { formatMinor, moneyProblem, multiplyMinor, PAYPAL_CURRENCIES, toMinor } from "../money.js";
 
 // ---------- Inputs (validated at the HTTP boundary) ----------
 
@@ -37,13 +37,39 @@ export const SellerMoneySchema = z
   });
 
 /** The part of a listing needed to bill a buyer. */
-export const ListingForSaleSchema = z.object({
-  title: z.string().trim().min(1).max(127),
-  description: z.string().max(1000).default(""),
-  price: SellerMoneySchema,
-  quantity: z.number().int().positive().max(999).default(1),
-});
+export const ListingForSaleSchema = z
+  .object({
+    title: z.string().trim().min(1).max(127),
+    description: z.string().max(1000).default(""),
+    price: SellerMoneySchema,
+    quantity: z.number().int().positive().max(999).default(1),
+    /** Optional shipping charge for the whole order (Invoicing v2 `amount.breakdown.shipping`), same currency as the price. */
+    shipping: SellerMoneySchema.optional(),
+  })
+  .superRefine((l, ctx) => {
+    if (l.shipping && l.shipping.currency_code !== l.price.currency_code) {
+      ctx.addIssue({ code: "custom", path: ["shipping", "currency_code"], message: `shipping must be in the price's currency (${l.price.currency_code})` });
+    }
+  });
 export type ListingForSale = z.infer<typeof ListingForSaleSchema>;
+
+/**
+ * What the buyer is billed for a listing: item total (price x quantity), shipping and the sum,
+ * in integer minor units and formatted for the currency. Throws MoneyError when invalid.
+ */
+export function listingTotals(listing: Pick<ListingForSale, "price" | "quantity" | "shipping">): { currency_code: string; unit: string; item_total: string; shipping?: string; total: string } {
+  const currency = listing.price.currency_code;
+  const unitMinor = toMinor(listing.price.value, currency);
+  const itemMinor = multiplyMinor(unitMinor, listing.quantity ?? 1);
+  const shippingMinor = listing.shipping ? toMinor(listing.shipping.value, currency) : 0;
+  return {
+    currency_code: currency,
+    unit: formatMinor(unitMinor, currency),
+    item_total: formatMinor(itemMinor, currency),
+    ...(listing.shipping ? { shipping: formatMinor(shippingMinor, currency) } : {}),
+    total: formatMinor(itemMinor + shippingMinor, currency),
+  };
+}
 
 /** A buyer is chosen by demo alias ("Demo buyer 1"), never by email address. */
 export const BuyerSchema = z.object({

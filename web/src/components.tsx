@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react";
-import { api, ApiError, money, providerLabel, type Journey, type Money, type Proposal } from "./api";
+import { addMoney, api, ApiError, itemPlusShipping, money, providerLabel, type Journey, type Money, type Proposal } from "./api";
 
 export function ErrorBox({ error }: { error: unknown }) {
   if (!error) return null;
@@ -176,7 +176,9 @@ export function ProposalSummary({ proposal, compact = false }: { proposal: Propo
   switch (proposal.kind) {
     case "create_and_send_invoice": {
       const items = pl.invoice?.items as Array<{ name: string; quantity: string; unit_amount: Money }> | undefined;
-      const total = sumItems(items);
+      const itemTotal = sumItems(items);
+      const shipping = pl.invoice?.amount?.breakdown?.shipping?.amount as Money | undefined;
+      const total = addMoney(itemTotal, shipping);
       return (
         <div className="ledger">
           {!compact && <div className="ledger-cap">Invoice draft</div>}
@@ -186,20 +188,31 @@ export function ProposalSummary({ proposal, compact = false }: { proposal: Propo
               <span className="num">{money(i.unit_amount)}</span>
             </div>
           ))}
+          {shipping && (
+            <div className="ledger-row">
+              <span>Shipping</span>
+              <span className="num">{money(shipping)}</span>
+            </div>
+          )}
           <div className="ledger-row total">
             <span>Total</span>
             <span className="num serif">{money(total)}</span>
           </div>
+          {shipping && <p className="muted small">{itemPlusShipping(itemTotal, shipping)}</p>}
           {!compact && pl.invoice?.detail?.note && <p className="note-text"><span className="muted">Note to the buyer:</span> {pl.invoice.detail.note}</p>}
         </div>
       );
     }
     case "create_payment_link": {
       const unit = pl.order?.purchase_units?.[0];
+      const shipping = unit?.amount?.breakdown?.shipping as Money | undefined;
+      const itemTotal = (unit?.amount?.breakdown?.item_total as Money | undefined) ?? unit?.amount;
       return (
         <div className="ledger">
-          <div className="ledger-row"><span className="clamp1">{unit?.description}</span><span className="num">{money(unit?.amount)}</span></div>
+          <div className="ledger-row"><span className="clamp1">{unit?.description}</span><span className="num">{money(itemTotal)}</span></div>
+          {shipping && <div className="ledger-row"><span>Shipping</span><span className="num">{money(shipping)}</span></div>}
           <div className="ledger-row total"><span>Total</span><span className="num serif">{money(unit?.amount)}</span></div>
+          {shipping && <p className="muted small">{itemPlusShipping(itemTotal, shipping)}</p>}
         </div>
       );
     }

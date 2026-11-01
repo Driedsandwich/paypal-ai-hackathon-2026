@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { z } from "zod";
 import type { AiProvider } from "../ai/provider.js";
-import { BuyerSchema, EvidenceInputSchema, JpItemSchema, ListingForSaleSchema, ShipmentFactsSchema, type EvidenceInput, type UnpaidInvoice } from "../agent/schemas.js";
+import { BuyerSchema, EvidenceInputSchema, JpItemSchema, ListingForSaleSchema, listingTotals, ShipmentFactsSchema, type EvidenceInput, type UnpaidInvoice } from "../agent/schemas.js";
 import { Agent } from "../agent/tasks.js";
 import { chat, ChatInputSchema } from "../agent/tools.js";
 import type { AppSettings } from "../config.js";
@@ -246,7 +246,9 @@ const PrepareSchema = z.object({
 /** The sale to bill: the caller's draft, or a new one. Updated with what is billed now. */
 function saleToBill(ctx: Ctx, body: z.infer<typeof PrepareSchema>, alias: string, path: "invoice" | "order"): Sale {
   const draft = ownDraftSale(ctx, body.sale_id);
-  const fields = { titleEn: body.listing.title, listing: body.listing, buyerAlias: alias, amount: body.listing.price, path };
+  // The sale's amount is what the buyer is billed: item total plus shipping (pass 4).
+  const t = listingTotals(body.listing);
+  const fields = { titleEn: body.listing.title, listing: body.listing, buyerAlias: alias, amount: { currency_code: t.currency_code, value: t.total }, path };
   if (draft) {
     Object.assign(draft, fields, body.country ? { country: body.country } : {});
     return draft;

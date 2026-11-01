@@ -31,6 +31,8 @@ export function NewItemView({ health, refresh }: ViewProps) {
   const [listing, setListing] = useState<Listing | null>(null);
   const [buyer, setBuyer] = useState(health.demo.buyers[0]?.alias ?? "");
   const [price, setPrice] = useState({ currency_code: "USD", value: "" });
+  /** Optional shipping charge, same currency as the price (empty = none). */
+  const [shipping, setShipping] = useState("");
 
   useEffect(() => {
     api.get<Array<{ key: string; item: JpItem }>>("/api/demo/items").then(setSamples, () => setSamples([]));
@@ -50,7 +52,13 @@ export function NewItemView({ health, refresh }: ViewProps) {
       sale_id: listing.sale_id,
       country,
       title_ja: item.title_ja,
-      listing: { title: listing.title.slice(0, 127), description: listing.description.slice(0, 1000), price, quantity: 1 },
+      listing: {
+        title: listing.title.slice(0, 127),
+        description: listing.description.slice(0, 1000),
+        price,
+        quantity: 1,
+        ...(shipping.trim() && Number(shipping) > 0 ? { shipping: { currency_code: price.currency_code, value: shipping.trim() } } : {}),
+      },
       buyer: { alias: buyer },
     });
     await refresh();
@@ -158,6 +166,10 @@ export function NewItemView({ health, refresh }: ViewProps) {
             <label className="field">
               <span>Amount</span>
               <input value={price.value} inputMode="decimal" onChange={(e) => setPrice({ ...price, value: e.target.value })} />
+            </label>
+            <label className="field">
+              <span>Shipping (optional, {price.currency_code || "same currency"})</span>
+              <input value={shipping} inputMode="decimal" placeholder="0" onChange={(e) => setShipping(e.target.value)} />
             </label>
           </div>
           <div className="decision">

@@ -96,7 +96,7 @@ export interface Journey {
   tracking?: { carrier: string; number: string; at: string };
   created_at: string;
   drafted_by?: GeneratedBy;
-  listing?: { title: string; description: string; price: Money; quantity: number };
+  listing?: { title: string; description: string; price: Money; quantity: number; shipping?: Money };
   stage: "draft" | "invoiced" | "paid" | "shipped" | "delivered";
   current_step: number;
   steps: Array<{ n: number; name: string; state: "done" | "current" | "todo"; label: string }>;
@@ -143,6 +143,19 @@ export function providerLabel(provider: string | undefined): string {
     default:
       return provider ?? "AI";
   }
+}
+
+/** "Item USD $110.00 + Shipping USD $18.00" (the S3 callout breakdown). */
+export function itemPlusShipping(item: Money | undefined, shipping: Money | undefined): string {
+  return `Item ${money(item)} + Shipping ${money(shipping)}`;
+}
+
+/** a + b for display (same currency), in minor units so cents do not drift. */
+export function addMoney(a: Money | undefined, b: Money | undefined): Money | undefined {
+  if (!a || !b) return a ?? b;
+  const digits = ["JPY", "HUF", "TWD"].includes(a.currency_code) ? 0 : 2;
+  const minor = Math.round(Number(a.value) * 10 ** digits) + Math.round(Number(b.value) * 10 ** digits);
+  return { currency_code: a.currency_code, value: (minor / 10 ** digits).toFixed(digits) };
 }
 
 export function money(m: Money | undefined): string {

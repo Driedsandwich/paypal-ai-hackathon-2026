@@ -83,6 +83,8 @@ export interface InvoiceDraft {
   invoicer?: InvoicerInfo;
   primary_recipients?: RecipientInfo[];
   items: InvoiceItem[];
+  /** Only the shipping charge is set by this app (`amount_summary_detail.breakdown.shipping`). */
+  amount?: { breakdown?: { shipping?: { amount: Money } } };
   [key: string]: unknown;
 }
 

@@ -154,13 +154,15 @@ export class OfflinePayPal implements PayPalApi {
     const iid = id("OFF2-", 16);
     let totalMinor = 0;
     for (const item of draft.items) totalMinor += multiplyMinor(toMinor(item.unit_amount.value, item.unit_amount.currency_code), Number(item.quantity));
+    const shipping = draft.amount?.breakdown?.shipping?.amount;
+    if (shipping) totalMinor += toMinor(shipping.value, shipping.currency_code);
     const currency = draft.detail.currency_code;
     const invoice: Invoice = {
       ...structuredClone(draft),
       id: iid,
       status: "DRAFT",
       detail: { ...structuredClone(draft.detail), invoice_date: draft.detail.invoice_date ?? today(this.now()) },
-      amount: { currency_code: currency, value: formatMinor(totalMinor, currency) },
+      amount: { currency_code: currency, value: formatMinor(totalMinor, currency), ...(shipping ? { breakdown: { shipping: { amount: shipping } } } : {}) },
       due_amount: { currency_code: currency, value: formatMinor(totalMinor, currency) },
     };
     this.invoices.set(iid, invoice);
