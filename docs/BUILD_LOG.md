@@ -196,7 +196,8 @@ Branch `claude/build-v1` (pushed after each milestone; no pull request, nothing 
 - Browser check: a Playwright run against the built server in offline mode clicked through
   approve invoice → simulate payment → add tracking → approve → simulate dispute → evidence
   pack → approve reply → New item → prepare invoice → approve in the inbox, with no page or
-  console errors (script not committed; `scripts/screenshots.mjs` is).
+  console errors on that flow (script not committed; `scripts/screenshots.mjs` is). Insights
+  was not part of that run; AG Studio prints its expected trial-licence console message there.
 
 ### What I built
 

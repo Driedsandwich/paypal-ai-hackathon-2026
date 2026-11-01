@@ -146,7 +146,9 @@ Chromium, not a project dependency) writes them to `docs/media/`.
 (`NODE_VERSION`), `TRUST_PROXY_HOPS=1`. In the Render dashboard choose *New → Blueprint*, pick
 this repository, and fill in the values marked `sync: false` (PayPal client id and secret,
 webhook id, AI keys, AG Studio licence, demo buyer emails, `PUBLIC_BASE_URL` = the service
-URL, seller name). Set `PAYPAL_OFFLINE_DEMO=true` to run the hosted demo without PayPal
+URL, seller name). `AI_API_KEY` must be set before the first deploy while `AI_PROVIDER` is
+`anthropic` (the server refuses to start without it, and the health check never turns green);
+set `AI_PROVIDER` empty to start with the offline AI instead. Set `PAYPAL_OFFLINE_DEMO=true` to run the hosted demo without PayPal
 credentials. The Blueprint fields follow Render's Blueprint specification as I know it; the
 Render docs could not be opened from the build environment, so check them when you first
 deploy.
