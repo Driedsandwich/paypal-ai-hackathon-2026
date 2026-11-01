@@ -81,13 +81,14 @@ export class OfflineWorlds {
   private async seed(session: string, address: string | undefined, paypal: OfflinePayPal, now: number): Promise<void> {
     const { registry, proposals, buyers } = this.deps;
     const iso = (daysAgo: number, minutes: number) => new Date(now - daysAgo * 86_400_000 + minutes * 60_000).toISOString();
-    // Created in reverse so the first seed sale is the newest.
-    for (const s of [...SEED].reverse()) {
+    // Created in reverse so the first seed sale is the newest (createdAt also steps back by index).
+    for (const [rev, s] of [...SEED].reverse().entries()) {
+      const order = SEED.length - 1 - rev;
       const alias = buyers.at(s.buyer).alias;
       const listing = { title: s.titleEn, description: s.description, price: { currency_code: "USD", value: s.usd }, quantity: 1 };
       const sale = registry.create({
         owner: session,
-        createdAt: iso(s.daysAgo, -60),
+        createdAt: iso(s.daysAgo, -60 - order * 7),
         titleJa: s.titleJa,
         titleEn: s.titleEn,
         listing,

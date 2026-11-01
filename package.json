@@ -29,6 +29,8 @@
     "@ai-sdk/anthropic": "3.0.137",
     "@ai-sdk/google": "3.0.140",
     "@ai-sdk/openai": "3.0.135",
+    "@fontsource/noto-sans-jp": "5.3.1",
+    "@fontsource/noto-serif-jp": "5.3.1",
     "ai": "6.0.320",
     "react": "19.3.1",
     "react-dom": "19.3.1",

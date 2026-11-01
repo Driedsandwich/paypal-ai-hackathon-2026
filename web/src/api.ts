@@ -35,17 +35,25 @@ export const api = {
   post: <T>(path: string, body?: unknown) => call<T>("POST", path, body),
 };
 
+export interface ProviderInfo {
+  provider: string;
+  model: string | null;
+}
+
 export interface Health {
-  paypal: { configured: boolean; env: string | null; webhookConfigured: boolean };
-  ai: { provider: string; model: string | null };
+  paypal: { configured: boolean; env: string | null; offline: boolean; webhookConfigured: boolean };
+  ai: ProviderInfo & { fallback?: ProviderInfo };
+  countries: Array<{ code: string; name: string }>;
   paymentPath: "invoice" | "order";
   fxJpyPerUsd: number;
   demoLimits: { windowMinutes: number; proposals: number; approvals: number; paypalReads: number; paypalWritesToday: number; paypalDailyWriteCap: number };
   limits: { perIp: number; windowMinutes: number; dailyCap: number; maxOutputTokens: number; usedToday: number };
   demo: { notice: string; buyerEmailsConfigured: number; buyers: Array<{ alias: string; email: string }> };
-  agStudio: { licensed: boolean };
+  agStudio: { licensed: boolean; licenseKey?: string };
   banner: string[];
 }
+
+export type ProposalStatus = "pending" | "executing" | "executed" | "failed" | "rejected" | "unknown" | "obsolete" | "expired";
 
 export interface Proposal {
   id: string;
@@ -54,8 +62,10 @@ export interface Proposal {
   payload: unknown;
   /** AI-written text for the seller to send by DM; never sent to PayPal. */
   copy_for_dm?: string;
-  status: "pending" | "executing" | "executed" | "failed" | "rejected" | "unknown" | "obsolete" | "expired";
+  sale_id?: string;
+  status: ProposalStatus;
   createdAt: string;
+  decidedAt?: string;
   result?: unknown;
   error?: { message?: string; needsCheck?: boolean; paypal?: ApiErrorBody["paypal"] };
 }
@@ -63,4 +73,77 @@ export interface Proposal {
 export interface Money {
   currency_code: string;
   value: string;
+}
+
+export type GeneratedBy = { provider: string; model?: string };
+
+export type JourneyAction = "prepare_invoice" | "remind" | "add_tracking" | "build_evidence" | "simulate_payment" | "simulate_dispute" | "simulate_delivery";
+
+export interface Journey {
+  id: string;
+  title_ja?: string;
+  title_en: string;
+  buyer: string;
+  country: string;
+  country_name: string;
+  amount?: Money;
+  path: "invoice" | "order";
+  invoice_id?: string;
+  invoice_number?: string;
+  invoice_status?: string;
+  order_id?: string;
+  capture_id?: string;
+  tracking?: { carrier: string; number: string; at: string };
+  created_at: string;
+  drafted_by?: GeneratedBy;
+  listing?: { title: string; description: string; price: Money; quantity: number };
+  stage: "draft" | "invoiced" | "paid" | "shipped" | "delivered";
+  current_step: number;
+  steps: Array<{ n: number; name: string; state: "done" | "current" | "todo"; label: string }>;
+  callout?: { step: number; kind: "proposal"; proposal: Proposal } | { step: number; kind: "action"; actions: JourneyAction[]; problem?: Proposal };
+  hint?: { step: number; text: string };
+  dispute?: { dispute_id: string; status?: string; reason?: string; stage?: string; amount?: Money; due?: string; open: boolean; from_step: number; proposals: Proposal[] };
+  can_simulate_dispute: boolean;
+  activity: Array<{ at: string; text: string }>;
+}
+
+export interface JourneysData {
+  journeys: Journey[];
+  counts: { draft: number; invoiced: number; paid: number; shipped: number; disputed: number };
+  pending_count: number;
+  warnings: string[];
+}
+
+/** "Claude", "Gemini", … for a provider name. */
+export function providerLabel(provider: string | undefined): string {
+  switch (provider) {
+    case "anthropic":
+      return "Claude";
+    case "google":
+      return "Gemini";
+    case "openai":
+      return "OpenAI";
+    case "fake":
+      return "Offline AI";
+    default:
+      return provider ?? "AI";
+  }
+}
+
+export function money(m: Money | undefined): string {
+  if (!m) return "";
+  const n = Number(m.value);
+  if (!Number.isFinite(n)) return `${m.currency_code} ${m.value}`;
+  const symbol = m.currency_code === "USD" ? "$" : m.currency_code === "JPY" ? "¥" : m.currency_code === "EUR" ? "€" : m.currency_code === "GBP" ? "£" : "";
+  const digits = ["JPY", "HUF", "TWD"].includes(m.currency_code) ? 0 : 2;
+  return `${m.currency_code} ${symbol}${n.toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits })}`;
+}
+
+/** "09:12" today, "Oct 28 09:12" otherwise. */
+export function shortTime(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const hm = d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+  const today = new Date().toDateString() === d.toDateString();
+  return today ? hm : `${d.toLocaleDateString("en-US", { month: "short", day: "numeric" })} ${hm}`;
 }
