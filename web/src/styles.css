@@ -1,0 +1,40 @@
+/* Minimal styling for this pass; the visual design is applied in the next pass. */
+:root { font-family: system-ui, -apple-system, "Segoe UI", "Hiragino Sans", "Noto Sans JP", sans-serif; color: #1a1a1a; background: #f6f7f9; }
+body { margin: 0; }
+header { background: #003087; color: #fff; padding: 0.75rem 1.25rem; display: flex; gap: 1rem; align-items: baseline; flex-wrap: wrap; }
+header h1 { margin: 0; font-size: 1.25rem; }
+header .powered { font-size: 0.85rem; opacity: 0.9; }
+nav { display: flex; gap: 0.25rem; padding: 0.5rem 1.25rem; background: #fff; border-bottom: 1px solid #ddd; flex-wrap: wrap; }
+nav button { border: 0; background: none; padding: 0.5rem 0.75rem; cursor: pointer; border-radius: 6px; font-size: 0.95rem; }
+nav button.active { background: #e8eefb; font-weight: 600; }
+.banner { background: #fff4ce; border-bottom: 1px solid #e5c55a; padding: 0.5rem 1.25rem; font-size: 0.9rem; }
+.banner p { margin: 0.2rem 0; }
+.layout { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 1rem; padding: 1rem 1.25rem; }
+@media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
+section.card, aside.card { background: #fff; border: 1px solid #ddd; border-radius: 8px; padding: 1rem; margin-bottom: 1rem; }
+h2 { margin-top: 0; font-size: 1.1rem; }
+h3 { font-size: 1rem; margin: 1rem 0 0.5rem; }
+label { display: block; font-size: 0.85rem; margin: 0.5rem 0 0.2rem; color: #444; }
+input, textarea, select { width: 100%; box-sizing: border-box; padding: 0.4rem; font: inherit; border: 1px solid #bbb; border-radius: 4px; }
+textarea { min-height: 4rem; }
+.row { display: flex; gap: 0.75rem; flex-wrap: wrap; }
+.row > * { flex: 1 1 10rem; }
+button.primary, button.secondary, button.danger { padding: 0.45rem 0.9rem; border-radius: 6px; border: 1px solid #003087; cursor: pointer; font: inherit; margin-top: 0.75rem; margin-right: 0.5rem; }
+button.primary { background: #0070e0; border-color: #0070e0; color: #fff; }
+button.secondary { background: #fff; color: #003087; }
+button.danger { background: #fff; border-color: #b00020; color: #b00020; }
+button:disabled { opacity: 0.5; cursor: default; }
+table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+th, td { text-align: left; padding: 0.35rem 0.5rem; border-bottom: 1px solid #eee; vertical-align: top; }
+pre { background: #f3f4f6; padding: 0.5rem; border-radius: 4px; overflow: auto; max-height: 18rem; font-size: 0.78rem; }
+.badge { display: inline-block; padding: 0.05rem 0.45rem; border-radius: 999px; font-size: 0.75rem; background: #e8eefb; color: #003087; margin-left: 0.25rem; }
+.badge.warn { background: #fff4ce; color: #7a5a00; }
+.badge.ok { background: #e3f5e8; color: #135c2a; }
+.badge.err { background: #fde7ea; color: #8a0018; }
+.error { color: #8a0018; background: #fde7ea; padding: 0.5rem; border-radius: 4px; font-size: 0.9rem; }
+.muted { color: #666; font-size: 0.85rem; }
+.ai-note { border-left: 3px solid #0070e0; padding-left: 0.6rem; }
+.watermark { position: relative; min-height: 14rem; display: grid; place-items: center; border: 2px dashed #bbb; border-radius: 8px; }
+.watermark::after { content: attr(data-mark); position: absolute; inset: 0; display: grid; place-items: center; font-size: 2rem; color: rgba(0,0,0,0.08); transform: rotate(-12deg); pointer-events: none; }
+.chat-log { max-height: 16rem; overflow: auto; font-size: 0.9rem; }
+.chat-log p { margin: 0.3rem 0; }

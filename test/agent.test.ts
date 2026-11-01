@@ -178,7 +178,11 @@ describe("free chat with tools", () => {
     const proposals = new ProposalStore(async () => undefined);
     const res = await chat(offline(), { paypal: client, proposals, agentConfig: CONFIG, paymentPath: "invoice" }, [{ role: "user", content: "未払いの請求書を見せて" }], 500);
     expect(res.tool_calls).toEqual([{ name: "list_invoices", input: { page_size: 10 } }]);
+    expect(res.reply).toContain("- 0001: SENT");
     expect(res.proposals).toEqual([]);
+
+    const noPayPal = await chat(offline(), { paypal: undefined, proposals, agentConfig: CONFIG, paymentPath: "invoice" }, [{ role: "user", content: "show disputes" }], 500);
+    expect(noPayPal.reply).toMatch(/could not read your disputes: PayPal is not configured/);
   });
 
   it("state-changing tools only create pending proposals", async () => {

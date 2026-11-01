@@ -5,6 +5,19 @@
 import { inputFromPrompt } from "../agent/json-task.js";
 import type { AiCompletionRequest } from "./provider.js";
 import type { FakeReplyValue } from "./fake-provider.js";
+import type { AiToolCallRecord } from "./provider.js";
+
+function describeResult(calls: AiToolCallRecord[], what: string): string {
+  const out = calls[0]?.output as Record<string, unknown> | unknown[] | undefined;
+  if (out && !Array.isArray(out) && typeof out.error === "string") return `[offline demo] I could not read your ${what}: ${out.error}`;
+  const items = Array.isArray(out) ? out : ((out as { invoices?: unknown[] } | undefined)?.invoices ?? []);
+  if (items.length === 0) return `[offline demo] You have no ${what} right now.`;
+  const lines = items.slice(0, 10).map((i) => {
+    const r = i as Record<string, any>;
+    return `- ${r.invoice_number ?? r.id ?? r.dispute_id}: ${r.status ?? ""}${r.amount?.value ? ` ${r.amount.value} ${r.amount.currency_code ?? ""}` : ""}`;
+  });
+  return `[offline demo] Your ${what}:\n${lines.join("\n")}`;
+}
 
 const GLOSSARY: Array<[RegExp, string]> = [
   [/抹茶碗|茶碗/, "tea bowl"],
@@ -66,8 +79,9 @@ function firstMatch(text: string, table: Array<[RegExp, string]>): string | unde
   return table.find(([re]) => re.test(text))?.[1];
 }
 
+const SMALL_WORDS = new Set(["from", "of", "and", "with", "in"]);
 function titleCase(s: string): string {
-  return s.replace(/\b\w/g, (c) => c.toUpperCase());
+  return s.replace(/\b\w+/g, (w, i: number) => (i > 0 && SMALL_WORDS.has(w) ? w : w[0]!.toUpperCase() + w.slice(1)));
 }
 
 function json(value: unknown): FakeReplyValue {
@@ -155,10 +169,10 @@ function chat(request: AiCompletionRequest): FakeReplyValue {
   const last = [...request.messages].reverse().find((m) => m.role === "user")?.content ?? "";
   const has = (name: string) => request.tools?.some((t) => t.name === name);
   if (/invoice|請求|unpaid|未払/i.test(last) && has("list_invoices")) {
-    return { text: "[offline demo] Here are your latest invoices from PayPal.", toolCalls: [{ name: "list_invoices", input: { page_size: 10 } }] };
+    return { text: "", toolCalls: [{ name: "list_invoices", input: { page_size: 10 } }], after: (calls) => describeResult(calls, "invoices") };
   }
   if (/dispute|紛争|claim|クレーム/i.test(last) && has("list_disputes")) {
-    return { text: "[offline demo] Here are your open disputes from PayPal.", toolCalls: [{ name: "list_disputes", input: {} }] };
+    return { text: "", toolCalls: [{ name: "list_disputes", input: {} }], after: (calls) => describeResult(calls, "disputes") };
   }
   return {
     text: "[offline demo] I can list your invoices or disputes, draft English listings, and prepare invoices, reminders, tracking and dispute replies for your approval. Try: \"show unpaid invoices\".",

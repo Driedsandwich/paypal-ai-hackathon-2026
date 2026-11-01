@@ -2,16 +2,17 @@
   "name": "paypal-ai-hackathon-2026",
   "version": "0.1.0",
   "private": true,
-  "description": "Starter for a PayPal AI Hackathon 2026 entry (work in progress)",
+  "description": "Okuri: an AI export desk for small Japanese sellers, with PayPal (PayPal AI Hackathon 2026 entry)",
   "license": "MIT",
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=20.19"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && vite build --config web/vite.config.ts",
     "start": "node dist/server.js",
-    "typecheck": "tsc --noEmit",
+    "dev:web": "vite --config web/vite.config.ts",
+    "typecheck": "tsc --noEmit && tsc -p web/tsconfig.json --noEmit",
     "test": "vitest run",
     "prepublish-check": "node scripts/prepublish-check.mjs"
   },

@@ -1,7 +1,14 @@
 import type { AiCompletionRequest, AiCompletionResult, AiProvider, AiToolCallRecord } from "./provider.js";
 
 /** A scripted reply. Objects may ask for tool calls, which the fake runs like the AI SDK would. */
-export type FakeReplyValue = string | { text: string; toolCalls?: Array<{ name: string; input: unknown }> };
+export type FakeReplyValue =
+  | string
+  | {
+      text: string;
+      toolCalls?: Array<{ name: string; input: unknown }>;
+      /** Builds the final text from the tool results (like a model's second step). */
+      after?: (calls: AiToolCallRecord[]) => string;
+    };
 export type FakeReply = FakeReplyValue | ((request: AiCompletionRequest) => FakeReplyValue);
 
 /**
@@ -32,6 +39,7 @@ export class FakeAiProvider implements AiProvider {
       const input = spec.inputSchema.parse(call.input);
       toolCalls.push({ name: call.name, input, output: await spec.execute(input) });
     }
-    return { text: value.text, provider: this.name, ...(toolCalls.length ? { toolCalls } : {}) };
+    const text = value.after ? value.after(toolCalls) : value.text;
+    return { text, provider: this.name, ...(toolCalls.length ? { toolCalls } : {}) };
   }
 }
