@@ -1,0 +1,96 @@
+import type { IncomingMessage, ServerResponse } from "node:http";
+import { ZodError } from "zod";
+import { AgentOutputError } from "../agent/json-task.js";
+import { PayPalApiError } from "../paypal/client.js";
+import { ProposalError } from "../proposals/store.js";
+
+export class HttpError extends Error {
+  constructor(
+    readonly status: number,
+    readonly code: string,
+    message: string,
+    readonly extra: Record<string, unknown> = {},
+    readonly headers: Record<string, string> = {},
+  ) {
+    super(message);
+    this.name = "HttpError";
+  }
+}
+
+export function sendJson(res: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}): void {
+  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store", ...headers });
+  res.end(JSON.stringify(body));
+}
+
+export function ok(res: ServerResponse, data: unknown, status = 200): void {
+  sendJson(res, status, { ok: true, data });
+}
+
+export async function readBody(req: IncomingMessage, maxBytes: number): Promise<string> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of req) {
+    const buf = chunk as Buffer;
+    size += buf.length;
+    if (size > maxBytes) throw new HttpError(413, "body_too_large", `Request body is larger than ${maxBytes} bytes`);
+    chunks.push(buf);
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+/**
+ * Reads a JSON object body. POST bodies must be application/json: browsers cannot send
+ * that cross-site without a CORS preflight, which this server never grants (CSRF guard
+ * for the approve endpoint).
+ */
+export async function readJsonBody(req: IncomingMessage, maxBytes: number): Promise<Record<string, unknown>> {
+  const type = (req.headers["content-type"] ?? "").split(";")[0]!.trim().toLowerCase();
+  if (type !== "application/json") throw new HttpError(415, "unsupported_media_type", "Send the request body as application/json");
+  const text = await readBody(req, maxBytes);
+  if (!text.trim()) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new HttpError(400, "invalid_json", "Request body is not valid JSON");
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new HttpError(400, "invalid_json", "Request body must be a JSON object");
+  return parsed as Record<string, unknown>;
+}
+
+/** Maps any error to { ok: false, error } without leaking request headers, keys or stack traces. */
+export function sendError(res: ServerResponse, err: unknown, log: (msg: string) => void = () => {}): void {
+  if (err instanceof HttpError) {
+    return sendJson(res, err.status, { ok: false, error: { code: err.code, message: err.message, ...err.extra } }, err.headers);
+  }
+  if (err instanceof ZodError) {
+    const issues = err.issues.slice(0, 20).map((i) => `${i.path.join(".") || "(body)"}: ${i.message}`);
+    return sendJson(res, 400, { ok: false, error: { code: "invalid_input", message: "Some fields are missing or invalid", issues } });
+  }
+  if (err instanceof ProposalError) {
+    return sendJson(res, err.code === "not_found" ? 404 : 409, { ok: false, error: { code: `proposal_${err.code}`, message: err.message } });
+  }
+  if (err instanceof PayPalApiError) {
+    const status = err.status === 404 ? 404 : err.status === 400 || err.status === 422 ? 422 : 502;
+    log(`PayPal error ${err.status} debug_id=${err.debugId ?? "-"}`);
+    return sendJson(res, status, { ok: false, error: { code: "paypal_error", message: "PayPal could not complete the request", paypal: err.toSafeJSON() } });
+  }
+  if (err instanceof AgentOutputError) {
+    return sendJson(res, 502, { ok: false, error: { code: "ai_output_invalid", message: err.message, issues: err.issues.slice(0, 10) } });
+  }
+  const name = err instanceof Error ? err.name : "Error";
+  log(`internal error: ${name}: ${err instanceof Error ? err.message : String(err)}`);
+  if (/^AI_|APICallError|RetryError/.test(name)) {
+    return sendJson(res, 502, { ok: false, error: { code: "ai_provider_error", message: "The AI provider could not answer. Please try again later." } });
+  }
+  return sendJson(res, 500, { ok: false, error: { code: "internal_error", message: "Internal error" } });
+}
+
+export function clientKey(req: IncomingMessage, trustProxy: boolean): string {
+  if (trustProxy) {
+    const xff = req.headers["x-forwarded-for"];
+    const first = (Array.isArray(xff) ? xff[0] : xff)?.split(",")[0]?.trim();
+    if (first) return first;
+  }
+  return req.socket.remoteAddress ?? "unknown";
+}

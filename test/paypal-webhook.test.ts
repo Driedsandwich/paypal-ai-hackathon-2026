@@ -103,7 +103,7 @@ describe("HTTP server", () => {
 
   async function start(status: "SUCCESS" | "FAILURE") {
     const { client } = paypalWithVerification(status);
-    const server = createApp({ config: FAKE_CONFIG, paypal: client });
+    const server = createApp({ paypalConfig: FAKE_CONFIG, paypal: client });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     close = () => new Promise((resolve) => server.close(() => resolve()));
     return `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -111,19 +111,27 @@ describe("HTTP server", () => {
 
   it("serves /health and the webhook route", async () => {
     const base = await start("SUCCESS");
-    const health = await fetch(`${base}/health`);
-    expect(await health.json()).toEqual({ ok: true, paypalEnv: "sandbox" });
+    const health = (await (await fetch(`${base}/health`)).json()) as { ok: boolean; data: { paypal: unknown } };
+    expect(health.ok).toBe(true);
+    expect(health.data.paypal).toEqual({ configured: true, env: "sandbox", webhookConfigured: true });
 
     const ok = await fetch(`${base}/webhooks/paypal`, { method: "POST", headers: HEADERS, body: JSON.stringify(EVENT) });
     expect(ok.status).toBe(200);
+    const events = (await (await fetch(`${base}/api/events`)).json()) as { data: Array<{ id: string; category: string }> };
+    expect(events.data.map((e) => [e.id, e.category])).toEqual([["WH-TEST-EVENT-1", "payment"]]);
 
-    const missing = await fetch(`${base}/nope`);
+    const missing = await fetch(`${base}/api/nope`);
     expect(missing.status).toBe(404);
+    const spa = await fetch(`${base}/some/view`); // non-API paths fall back to the UI
+    expect(spa.status).toBe(200);
+    expect(spa.headers.get("content-type")).toMatch(/text\/html/);
   });
 
   it("returns 400 from the webhook route when verification fails", async () => {
     const base = await start("FAILURE");
     const res = await fetch(`${base}/webhooks/paypal`, { method: "POST", headers: HEADERS, body: JSON.stringify(EVENT) });
     expect(res.status).toBe(400);
+    const events = (await (await fetch(`${base}/api/events`)).json()) as { data: unknown[] };
+    expect(events.data).toEqual([]);
   });
 });
