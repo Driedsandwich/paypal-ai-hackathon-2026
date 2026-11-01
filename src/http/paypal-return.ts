@@ -18,7 +18,8 @@ export function queueCapture(deps: ApiDeps, orderId: string): Proposal | undefin
   if (!known) return undefined;
   const existing = known.captureProposalId ? deps.proposals.peek(known.captureProposalId) : undefined;
   if (existing && CAPTURE_IN_PROGRESS.has(existing.status)) return existing;
-  const proposal = deps.proposals.propose("capture_order", `Capture payment for order ${orderId}`, { orderId }, { owner: known.owner });
+  const saleId = deps.sales.byOrder(orderId)?.id;
+  const proposal = deps.proposals.propose("capture_order", `Capture payment for order ${orderId}`, { orderId }, { owner: known.owner, ...(saleId ? { saleId } : {}) });
   known.captureProposalId = proposal.id;
   return proposal;
 }

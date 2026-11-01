@@ -1,5 +1,5 @@
 import type { DemoBuyers } from "../demo/buyers.js";
-import type { PayPalClient } from "../paypal/client.js";
+import type { PayPalApi } from "../paypal/offline.js";
 import type {
   CreateOrderRequest,
   DisputeEvidence,
@@ -132,7 +132,7 @@ export function orderForRecipient(buyers: DemoBuyers, p: CreatePaymentLinkPayloa
   return order;
 }
 
-async function createAndSend(paypal: PayPalClient, buyers: DemoBuyers, p: CreateAndSendInvoicePayload) {
+async function createAndSend(paypal: PayPalApi, buyers: DemoBuyers, p: CreateAndSendInvoicePayload) {
   const { invoice, notification } = invoiceForRecipient(buyers, p);
   if (!invoice.detail.invoice_number) {
     invoice.detail.invoice_number = await paypal.generateNextInvoiceNumber();
@@ -142,7 +142,7 @@ async function createAndSend(paypal: PayPalClient, buyers: DemoBuyers, p: Create
   return { invoiceId: created.id, invoiceNumber: invoice.detail.invoice_number, recipient: p.recipient_alias, payerLink: link?.href };
 }
 
-async function createLink(paypal: PayPalClient, opts: ExecutorOptions, p: CreatePaymentLinkPayload, ctx: ExecutionContext) {
+async function createLink(paypal: PayPalApi, opts: ExecutorOptions, p: CreatePaymentLinkPayload, ctx: ExecutionContext) {
   const order = await paypal.createOrder(orderForRecipient(opts.buyers, p));
   opts.orders?.register(order.id, ctx.owner);
   return { orderId: order.id, status: order.status, recipient: p.recipient_alias, payerLink: payerLinkOf(order.links) };
@@ -152,7 +152,7 @@ async function createLink(paypal: PayPalClient, opts: ExecutorOptions, p: Create
  * Re-reads the dispute right before a dispute write and refuses (obsolete) when PayPal no
  * longer allows that action. The approved payload is never changed.
  */
-async function requireDisputeAction(paypal: PayPalClient, disputeId: string, action: DisputeAction): Promise<void> {
+async function requireDisputeAction(paypal: PayPalApi, disputeId: string, action: DisputeAction): Promise<void> {
   const verdict = disputeActions(await paypal.getDispute(disputeId))[action];
   if (!verdict.allowed) throw new ProposalObsoleteError(`${verdict.reason} Nothing was sent. Build a new proposal if the dispute changes.`);
 }
@@ -161,9 +161,9 @@ async function requireDisputeAction(paypal: PayPalClient, disputeId: string, act
  * The only place in the app that calls PayPal write methods.
  * Used by ProposalStore.approve().
  */
-export function createPayPalExecutor(getPayPal: () => PayPalClient, opts: ExecutorOptions) {
+export function createPayPalExecutor(getPayPal: (owner: string) => PayPalApi, opts: ExecutorOptions) {
   return async (kind: ProposalKind, payload: unknown, ctx: ExecutionContext): Promise<unknown> => {
-    const paypal = getPayPal();
+    const paypal = getPayPal(ctx.owner);
     switch (kind) {
       case "create_and_send_invoice":
         return createAndSend(paypal, opts.buyers, payload as CreateAndSendInvoicePayload);

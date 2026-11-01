@@ -1,5 +1,5 @@
 import { TtlMap } from "../util/ttl-map.js";
-import type { PayPalClient } from "./client.js";
+import type { PayPalApi } from "./offline.js";
 import type { DisputeList, InvoiceList, ListDisputesParams, ListInvoicesParams } from "./types.js";
 
 /**
@@ -29,11 +29,11 @@ export class PayPalReadCache {
     return p;
   }
 
-  listInvoices(paypal: PayPalClient, params: ListInvoicesParams): Promise<InvoiceList> {
+  listInvoices(paypal: PayPalApi, params: ListInvoicesParams): Promise<InvoiceList> {
     return this.cached(`invoices:${JSON.stringify(params)}`, () => paypal.listInvoices(params));
   }
 
-  listDisputes(paypal: PayPalClient, params: ListDisputesParams): Promise<DisputeList> {
+  listDisputes(paypal: PayPalApi, params: ListDisputesParams): Promise<DisputeList> {
     return this.cached(`disputes:${JSON.stringify(params)}`, () => paypal.listDisputes(params));
   }
 

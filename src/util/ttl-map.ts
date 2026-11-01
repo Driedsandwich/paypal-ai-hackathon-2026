@@ -42,6 +42,17 @@ export class TtlMap<K, V> {
     this.items.clear();
   }
 
+  /** Live values, oldest first. */
+  values(): V[] {
+    const t = this.now();
+    const out: V[] = [];
+    for (const [k, e] of this.items) {
+      if (e.expiresAt <= t) this.items.delete(k);
+      else out.push(e.value);
+    }
+    return out;
+  }
+
   get size(): number {
     return this.items.size;
   }

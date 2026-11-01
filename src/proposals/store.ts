@@ -71,6 +71,8 @@ export interface Proposal<P = unknown> {
    * (PayPal ignores custom reminder text and uses its own).
    */
   copyForDm?: string;
+  /** The sale (journey) this proposal belongs to, e.g. "OK-1042". Display only; not sent to PayPal. */
+  saleId?: string;
   status: ProposalStatus;
   createdAt: string;
   decidedAt?: string;
@@ -103,6 +105,8 @@ export interface ProposeOptions {
   copyForDm?: string;
   /** Rate-limit key of the creating client; at most 50 pending proposals per address. */
   address?: string;
+  /** The sale (journey) the proposal belongs to. */
+  saleId?: string;
 }
 
 function deepFreeze<T>(value: T): T {
@@ -201,6 +205,7 @@ export class ProposalStore {
       title,
       payload: deepFreeze(structuredClone(payload)),
       ...(opts.copyForDm ? { copyForDm: opts.copyForDm } : {}),
+      ...(opts.saleId ? { saleId: opts.saleId } : {}),
       status: "pending",
       createdAt: now.toISOString(),
     };

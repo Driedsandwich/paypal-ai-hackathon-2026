@@ -24,6 +24,9 @@ import { ReminderLedger } from "./proposals/reminder-ledger.js";
 import { DemoBuyers } from "./demo/buyers.js";
 import { ProposalObsoleteError, ProposalPolicyError, ProposalStore } from "./proposals/store.js";
 import { MoneyError } from "./money.js";
+import { SaleRegistry } from "./journeys/sales.js";
+import { OfflineWorlds, offlineBuyerEmails } from "./journeys/offline-world.js";
+import type { PayPalApi } from "./paypal/offline.js";
 
 const MAX_WEBHOOK_BODY = 1024 * 1024;
 /** Node server limits (F8): whole request headers within 20 s, whole request within 30 s. */
@@ -34,8 +37,11 @@ export interface AppOptions {
   settings?: AppSettings;
   /** Undefined runs the app without PayPal (UI shows a banner). */
   paypalConfig?: PayPalConfig;
-  paypal?: PayPalClient;
+  paypal?: PayPalApi;
   ai?: AiProvider;
+  /** Display info about primary and fallback AI providers (for the header). */
+  aiInfo?: ApiDeps["aiInfo"];
+  sales?: SaleRegistry;
   events?: EventLog;
   proposals?: ProposalStore;
   limiter?: AiLimiter;
@@ -62,32 +68,49 @@ export function describeExecutionError(err: unknown, log: (msg: string) => void 
 /** Wires dependencies with safe defaults (offline AI, no PayPal). */
 export function buildDeps(options: AppOptions = {}): ApiDeps & { log: (msg: string) => void; staticDir: string | undefined } {
   const settings = options.settings ?? loadSettings({});
-  const paypal = options.paypal ?? (options.paypalConfig ? new PayPalClient({ config: options.paypalConfig }) : undefined);
+  const offlineDemo = settings.paypalOfflineDemo;
+  const paypal = offlineDemo ? undefined : (options.paypal ?? (options.paypalConfig ? new PayPalClient({ config: options.paypalConfig }) : undefined));
   const limiter =
     options.limiter ??
     new AiLimiter({ perIpMax: settings.aiRateLimitPerIp, windowMs: settings.aiRateLimitWindowMinutes * 60_000, dailyCap: settings.aiDailyCap, invalidMax: settings.aiInvalidRateLimitPerIp });
   // Every model call is debited from the daily AI budget (F9).
   const ai = withAiBudget(options.ai ?? new FakeAiProvider([offlineReply]), limiter);
   const log = options.log ?? (() => {});
-  const buyers = new DemoBuyers(settings.demoBuyerEmails);
+  // Offline demo without DEMO_BUYER_EMAILS: three made-up buyers whose addresses never resolve.
+  const buyers = new DemoBuyers(offlineDemo && settings.demoBuyerEmails.length === 0 ? offlineBuyerEmails() : settings.demoBuyerEmails);
+  const sales = options.sales ?? new SaleRegistry();
   const orders = options.orders ?? new OrderRegistry();
   const reminders = new ReminderLedger();
+  let offline: OfflineWorlds | undefined;
   const proposals =
     options.proposals ??
     new ProposalStore(
       createPayPalExecutor(
-        () => {
-          if (!paypal) throw new Error("PayPal is not configured");
-          return paypal;
+        (owner) => {
+          const client = offline ? offline.peek(owner) : paypal;
+          if (!client) throw new Error("PayPal is not configured");
+          return client;
         },
         { buyers, orders, reminders },
       ),
       { describeError: (err) => describeExecutionError(err, log), isUnknownOutcome: (err) => err instanceof PayPalTimeoutError && err.write },
     );
+  if (offlineDemo) {
+    offline = new OfflineWorlds({
+      registry: sales,
+      proposals,
+      buyers,
+      ...(settings.sellerBusinessName ? { sellerBusinessName: settings.sellerBusinessName } : {}),
+      draftedBy: { provider: ai.name, ...(ai.model ? { model: ai.model } : {}) },
+    });
+  }
   return {
     settings,
-    paypalConfig: options.paypalConfig,
+    paypalConfig: offlineDemo ? undefined : options.paypalConfig,
     paypal,
+    offline,
+    sales,
+    ...(options.aiInfo ? { aiInfo: options.aiInfo } : {}),
     ai,
     agent: new Agent(ai, {
       fxJpyPerUsd: settings.fxJpyPerUsd,
@@ -102,7 +125,8 @@ export function buildDeps(options: AppOptions = {}): ApiDeps & { log: (msg: stri
     orders,
     reminders,
     limits: options.limits ?? new DemoLimits(settings),
-    reads: new PayPalReadCache(settings.listCacheSeconds * 1000),
+    // Offline worlds are per visitor: never share a cached list between them.
+    reads: new PayPalReadCache(offlineDemo ? 0 : settings.listCacheSeconds * 1000),
     log,
     staticDir: options.staticDir,
   };
@@ -201,7 +225,7 @@ if (isMain) {
   const app = createApp(options);
   app.listen(settings.port, () => {
     log(`Listening on http://localhost:${settings.port}`);
-    log(`PayPal: ${paypalConfig ? paypalConfig.env : "not configured"} | AI: ${ai.name}${ai.model ? ` (${ai.model})` : ""} | payment path: ${settings.paymentPath}`);
+    log(`PayPal: ${settings.paypalOfflineDemo ? "offline demo (simulated in memory)" : paypalConfig ? paypalConfig.env : "not configured"} | AI: ${ai.name}${ai.model ? ` (${ai.model})` : ""} | payment path: ${settings.paymentPath}`);
     void warmUp(buildDeps(options), log);
   });
 }

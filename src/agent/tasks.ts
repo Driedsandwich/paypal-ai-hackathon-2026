@@ -145,9 +145,9 @@ export class Agent {
   }
 
   /** Task 2 (invoice path): invoice draft + notification for seller approval. Nothing is sent here. */
-  async prepareInvoice(listing: ListingForSale, buyer: Buyer): Promise<PreparedBilling<CreateAndSendInvoicePayload>> {
+  async prepareInvoice(listing: ListingForSale, buyer: Buyer, marker?: string): Promise<PreparedBilling<CreateAndSendInvoicePayload>> {
     const { value, provider, model } = await this.buyerMessage(listing);
-    const payload = buildInvoicePayload(listing, buyer.alias, value, this.config.sellerBusinessName);
+    const payload = buildInvoicePayload(listing, buyer.alias, value, this.config.sellerBusinessName, marker);
     return {
       payload,
       buyer_message: value,
@@ -156,9 +156,9 @@ export class Agent {
   }
 
   /** Task 2 (order path, spec 3.5): Orders v2 payment link for seller approval. */
-  async preparePaymentLink(listing: ListingForSale, buyer: Buyer): Promise<PreparedBilling<CreatePaymentLinkPayload>> {
+  async preparePaymentLink(listing: ListingForSale, buyer: Buyer, marker?: string): Promise<PreparedBilling<CreatePaymentLinkPayload>> {
     const { value, provider, model } = await this.buyerMessage(listing);
-    const payload = buildOrderPayload(listing, buyer.alias, this.config);
+    const payload = buildOrderPayload(listing, buyer.alias, this.config, marker);
     return { payload, buyer_message: value, generated_by: { provider, ...(model ? { model } : {}) } };
   }
 
@@ -263,12 +263,15 @@ export function buildInvoicePayload(
   recipientAlias: string,
   message: { note: string },
   sellerBusinessName?: string,
+  /** Sale marker ("Okuri OK-1042 US") for `detail.reference`, so the app recognises its own invoices. */
+  reference?: string,
 ): CreateAndSendInvoicePayload {
   const currency = listing.price.currency_code;
   const unit = normalizeAmount(listing.price.value, currency); // throws MoneyError if invalid
   const invoice: InvoiceDraft = {
     detail: {
       currency_code: listing.price.currency_code,
+      ...(reference ? { reference } : {}),
       note: message.note,
       payment_term: { term_type: "NET_10" },
     },
@@ -296,6 +299,8 @@ export function buildOrderPayload(
   listing: ListingForSale,
   recipientAlias: string,
   config: Pick<AgentConfig, "publicBaseUrl" | "sellerBusinessName">,
+  /** Sale marker for `purchase_units[0].custom_id` (not shown to the buyer). */
+  customId?: string,
 ): CreatePaymentLinkPayload {
   const currency = listing.price.currency_code;
   const unitMinor = toMinor(listing.price.value, currency); // throws MoneyError if invalid
@@ -307,6 +312,7 @@ export function buildOrderPayload(
     purchase_units: [
       {
         description: listing.title.slice(0, 127),
+        ...(customId ? { custom_id: customId } : {}),
         amount: {
           currency_code: currency,
           value: total,

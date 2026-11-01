@@ -139,7 +139,7 @@ describe("HTTP server", () => {
     const base = await start("SUCCESS");
     const health = (await (await fetch(`${base}/health`)).json()) as { ok: boolean; data: { paypal: unknown } };
     expect(health.ok).toBe(true);
-    expect(health.data.paypal).toEqual({ configured: true, env: "sandbox", webhookConfigured: true });
+    expect(health.data.paypal).toEqual({ configured: true, env: "sandbox", offline: false, webhookConfigured: true });
 
     const ok = await fetch(`${base}/webhooks/paypal`, { method: "POST", headers: HEADERS, body: JSON.stringify(EVENT) });
     expect(ok.status).toBe(200);

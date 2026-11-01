@@ -2,7 +2,9 @@ import { z } from "zod";
 import type { AiMessage, AiProvider, AiToolSpec } from "../ai/provider.js";
 import { carrierFor } from "../paypal/carriers.js";
 import { allowedActionList, disputeActions, type DisputeAction } from "../paypal/dispute-actions.js";
-import type { PayPalClient } from "../paypal/client.js";
+import type { PayPalApi } from "../paypal/offline.js";
+import type { TrackingCheck, TrackingTarget } from "../journeys/created-here.js";
+import { HttpError } from "../http/util.js";
 import type { Invoice } from "../paypal/types.js";
 import type { DemoBuyers } from "../demo/buyers.js";
 import { redactDeep, redactPersonalData } from "../privacy/redact.js";
@@ -16,12 +18,12 @@ import { buildInvoicePayload, buildOrderPayload, standardReminderPayload, type A
 
 // Agent tools for the free-chat entry point. @paypal/agent-toolkit's AI SDK adapter
 // does not work with the installed AI SDK (see docs/DECISIONS.md), so these are our
-// own tools on top of PayPalClient. Names match the toolkit's where they overlap.
+// own tools on top of PayPalApi. Names match the toolkit's where they overlap.
 // Read tools run immediately; every tool that would change state at PayPal or reach
 // a buyer only creates a proposal that the seller must approve.
 
 export interface ToolDeps {
-  paypal: PayPalClient | undefined;
+  paypal: PayPalApi | undefined;
   proposals: ProposalStore;
   agentConfig: AgentConfig;
   paymentPath: "invoice" | "order";
@@ -39,6 +41,11 @@ export interface ToolDeps {
   beforePropose?: () => void;
   /** Counts one PayPal read against the visitor's limits (throws LimitError when over). */
   beforeRead?: () => void;
+  /**
+   * Checks that a tracking target was created by this demo (throws HttpError otherwise) and
+   * returns its sale and transaction. Without it any id is accepted (unit tests).
+   */
+  trackable?: (target: TrackingTarget) => Promise<TrackingCheck>;
 }
 
 const NOT_CONFIGURED = { error: "PayPal is not configured on this server (set PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET)." };
@@ -66,13 +73,13 @@ function pending(p: { id: string; title: string }) {
 
 /** Limit and queue refusals go back to the model as a tool error instead of failing the chat. */
 function asToolError(err: unknown): { error: string } {
-  if (err instanceof LimitError || err instanceof ProposalError) return { error: err.message };
+  if (err instanceof LimitError || err instanceof ProposalError || err instanceof HttpError) return { error: err.message };
   throw err;
 }
 
 export function agentTools(deps: ToolDeps): AiToolSpec[] {
   const { paypal } = deps;
-  const read = async <T>(fn: (pp: PayPalClient) => Promise<T>) => {
+  const read = async <T>(fn: (pp: PayPalApi) => Promise<T>) => {
     if (!paypal) return NOT_CONFIGURED;
     try {
       deps.beforeRead?.();
@@ -82,10 +89,10 @@ export function agentTools(deps: ToolDeps): AiToolSpec[] {
     return fn(paypal);
   };
   const proposals = {
-    propose: <P>(kind: ProposalKind, title: string, payload: P, copyForDm?: string): Proposal<P> => {
+    propose: <P>(kind: ProposalKind, title: string, payload: P, copyForDm?: string, saleId?: string): Proposal<P> => {
       deps.proposals.assertRoom(1, deps.address);
       deps.beforePropose?.();
-      return deps.proposals.propose(kind, title, payload, { owner: deps.sessionId, ...(deps.address ? { address: deps.address } : {}), ...(copyForDm ? { copyForDm } : {}) });
+      return deps.proposals.propose(kind, title, payload, { owner: deps.sessionId, ...(deps.address ? { address: deps.address } : {}), ...(copyForDm ? { copyForDm } : {}), ...(saleId ? { saleId } : {}) });
     },
   };
   /** pending(...) or a tool error when a limit refuses the proposal. */
@@ -158,25 +165,56 @@ export function agentTools(deps: ToolDeps): AiToolSpec[] {
     ),
     tool(
       "create_shipment_tracking",
-      "Propose adding a tracking number at PayPal. Use order_id + capture_id for payment links, or transaction_id for invoice payments.",
-      z.object({ carrier: z.string().min(1).max(64), tracking_number: z.string().min(1).max(64), order_id: z.string().max(36).optional(), capture_id: z.string().max(50).optional(), transaction_id: z.string().max(50).optional() }),
+      "Propose adding a tracking number at PayPal, only for sales created in this app. Use invoice_id for invoice payments, or order_id + capture_id for payment links.",
+      z.object({
+        carrier: z.string().min(1).max(64),
+        tracking_number: z.string().min(1).max(64),
+        invoice_id: z.string().max(30).optional(),
+        order_id: z.string().max(36).optional(),
+        capture_id: z.string().max(50).optional(),
+        transaction_id: z.string().max(50).optional(),
+      }),
       async (i) => {
         if (i.order_id && i.capture_id) {
+          let check: TrackingCheck = {};
+          if (deps.trackable) {
+            try {
+              check = await deps.trackable({ kind: "order", order_id: i.order_id });
+            } catch (err) {
+              return asToolError(err);
+            }
+          }
           return offer(() =>
-            proposals.propose("add_order_tracking", `Add ${i.carrier} tracking ${i.tracking_number} to order ${i.order_id}`, {
-              orderId: i.order_id,
-              tracker: { capture_id: i.capture_id, tracking_number: i.tracking_number, ...carrierFor(i.carrier, "orders"), notify_payer: true },
-            }),
+            proposals.propose(
+              "add_order_tracking",
+              `Add ${i.carrier} tracking ${i.tracking_number} to order ${i.order_id}`,
+              { orderId: i.order_id, tracker: { capture_id: i.capture_id!, tracking_number: i.tracking_number, ...carrierFor(i.carrier, "orders"), notify_payer: true } },
+              undefined,
+              check.saleId,
+            ),
           );
         }
-        if (i.transaction_id) {
+        if (i.invoice_id || i.transaction_id) {
+          let check: TrackingCheck = { ...(i.transaction_id ? { transactionId: i.transaction_id } : {}) };
+          if (deps.trackable) {
+            try {
+              check = await deps.trackable({ kind: "invoice", ...(i.invoice_id ? { invoice_id: i.invoice_id } : {}), ...(i.transaction_id ? { transaction_id: i.transaction_id } : {}) });
+            } catch (err) {
+              return asToolError(err);
+            }
+          }
+          if (!check.transactionId) return { error: "Give the invoice id of a paid invoice created in this app." };
           return offer(() =>
-            proposals.propose("add_invoice_tracking", `Add ${i.carrier} tracking ${i.tracking_number} to transaction ${i.transaction_id}`, {
-              trackers: [{ transaction_id: i.transaction_id, tracking_number: i.tracking_number, status: "SHIPPED", ...carrierFor(i.carrier, "shipping"), notify_buyer: true }],
-            }),
+            proposals.propose(
+              "add_invoice_tracking",
+              `Add ${i.carrier} tracking ${i.tracking_number} to transaction ${check.transactionId}`,
+              { trackers: [{ transaction_id: check.transactionId!, tracking_number: i.tracking_number, status: "SHIPPED", ...carrierFor(i.carrier, "shipping"), notify_buyer: true }] },
+              undefined,
+              check.saleId,
+            ),
           );
         }
-        return { error: "Give order_id and capture_id (payment link) or transaction_id (invoice payment)." };
+        return { error: "Give invoice_id (invoice payment) or order_id and capture_id (payment link)." };
       },
     ),
     tool(

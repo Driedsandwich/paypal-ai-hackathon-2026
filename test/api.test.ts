@@ -59,8 +59,10 @@ function sandbox(overrides: (c: RecordedCall) => { status?: number; json?: unkno
       };
     }
     if (u === "/v2/invoicing/invoices/INV2-PAID") {
-      return { json: { id: "INV2-PAID", status: "PAID", detail: { currency_code: "USD", invoice_number: "0002", invoice_date: "2026-10-15" }, amount: { currency_code: "USD", value: "40.00" }, items: [{ name: "Kokeshi doll", quantity: "1" }], payments: { transactions: [{ payment_id: "8MC585209K746392H", payment_date: "2026-10-16" }] } } };
+      return { json: { id: "INV2-PAID", status: "PAID", detail: { currency_code: "USD", invoice_number: "0002", invoice_date: "2026-10-15", reference: "Okuri OK-1001 US" }, amount: { currency_code: "USD", value: "40.00" }, items: [{ name: "Kokeshi doll", quantity: "1" }], payments: { transactions: [{ payment_id: "8MC585209K746392H", payment_date: "2026-10-16" }] } } };
     }
+    // An order created by this app on an earlier run (marker in custom_id).
+    if (u === "/v2/checkout/orders/O-1") return { json: { id: "O-1", status: "COMPLETED", purchase_units: [{ custom_id: "Okuri OK-1002 GB" }] } };
     if (u === "/v2/invoicing/invoices/INV2-UNPAID") return { json: { id: "INV2-UNPAID", status: "SENT", detail: { currency_code: "USD" } } };
     if (u === "/v2/invoicing/generate-next-invoice-number") return { json: { invoice_number: "0003" } };
     if (u === "/v2/invoicing/invoices" && c.method === "POST") return { status: 201, json: { id: "INV2-NEW", status: "DRAFT" } };

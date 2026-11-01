@@ -14,7 +14,7 @@ import type { PayPalReadCache } from "../paypal/read-cache.js";
 import { showMoney } from "../money.js";
 import { carrierFor } from "../paypal/carriers.js";
 import { allowedActionList, disputeActions } from "../paypal/dispute-actions.js";
-import type { PayPalClient } from "../paypal/client.js";
+import type { PayPalApi, OfflinePayPal } from "../paypal/offline.js";
 import type { PayPalConfig } from "../paypal/config.js";
 import type { Invoice } from "../paypal/types.js";
 import type { SeedDemoDataPayload } from "../proposals/actions.js";
@@ -27,12 +27,25 @@ import { disputeDetail, disputeRow, invoiceDetail, invoiceRow, orderView, public
 import { queueCapture } from "./paypal-return.js";
 import { ensureSession, isSecureRequest } from "./session.js";
 import { HttpError, isInvalidInputError, ok, readJsonBody } from "./util.js";
+import { checkTrackingTarget } from "../journeys/created-here.js";
+import { buildJourney, journeyCounts, saleFromInvoice } from "../journeys/journeys.js";
+import type { OfflineWorlds } from "../journeys/offline-world.js";
+import { recordExecution } from "../journeys/record.js";
+import { COUNTRIES, isCountry, saleMarker, type Sale, type SaleRegistry } from "../journeys/sales.js";
+import type { DisputeSummary } from "../paypal/types.js";
 
 export interface ApiDeps {
   settings: AppSettings;
   paypalConfig: PayPalConfig | undefined;
-  paypal: PayPalClient | undefined;
+  /** The real PayPal client (undefined without credentials or in the offline demo). */
+  paypal: PayPalApi | undefined;
+  /** Offline demo: one simulated PayPal per visitor (PAYPAL_OFFLINE_DEMO). */
+  offline: OfflineWorlds | undefined;
+  /** Sales (journeys) started on this server; also the tracking allowlist. */
+  sales: SaleRegistry;
   ai: AiProvider;
+  /** Display info about the AI providers (primary and optional fallback). */
+  aiInfo?: { primary: { provider: string; model: string | null }; fallback?: { provider: string; model: string | null } };
   agent: Agent;
   events: EventLog;
   proposals: ProposalStore;
@@ -66,6 +79,8 @@ interface Ctx {
   session: string;
   /** Client address (see TRUST_PROXY_HOPS). */
   address: string;
+  /** PayPal for this visitor: the shared sandbox client, or their offline simulator. */
+  paypal: PayPalApi | undefined;
   /**
    * AI routes call this after validating their input and right before the first model call:
    * it debits the per-address AI allowance and checks the daily budget (F9).
@@ -81,11 +96,29 @@ function publicProposal(ctx: Ctx, p: Proposal) {
 }
 
 /** Creates a proposal owned by the caller's session. */
-function propose<P>(ctx: Ctx, kind: ProposalKind, title: string, payload: P, copyForDm?: string): Proposal<P> {
+function propose<P>(ctx: Ctx, kind: ProposalKind, title: string, payload: P, copyForDm?: string, saleId?: string): Proposal<P> {
   const key = limitKey(ctx.address);
   ctx.deps.proposals.assertRoom(1, key);
   ctx.deps.limits.takeProposals(ctx.session, key);
-  return ctx.deps.proposals.propose(kind, title, payload, { owner: ctx.session, address: limitKey(ctx.address), ...(copyForDm ? { copyForDm } : {}) });
+  return ctx.deps.proposals.propose(kind, title, payload, { owner: ctx.session, address: limitKey(ctx.address), ...(copyForDm ? { copyForDm } : {}), ...(saleId ? { saleId } : {}) });
+}
+
+/** The caller's sale, if it may still be billed (draft, no invoice or order yet). */
+function ownDraftSale(ctx: Ctx, saleId: string | undefined): Sale | undefined {
+  if (!saleId) return undefined;
+  const sale = ctx.deps.sales.get(saleId);
+  return sale && sale.owner === ctx.session && !sale.invoiceId && !sale.orderId ? sale : undefined;
+}
+
+/** The sale a dispute belongs to (by payment transaction or invoice number). */
+function saleOfDispute(deps: ApiDeps, d: { disputed_transactions?: Array<{ seller_transaction_id?: string; invoice_number?: string }> }): Sale | undefined {
+  for (const t of d.disputed_transactions ?? []) {
+    const byTx = t.seller_transaction_id ? deps.sales.byTransaction(t.seller_transaction_id) : undefined;
+    if (byTx) return byTx;
+    const byNumber = t.invoice_number ? deps.sales.all().find((s) => s.invoiceNumber === t.invoice_number) : undefined;
+    if (byNumber) return byNumber;
+  }
+  return undefined;
 }
 
 /** Resolves a buyer alias, or explains which aliases exist. */
@@ -108,16 +141,22 @@ interface Route {
   handler: Handler;
 }
 
-function requirePayPal(deps: ApiDeps): PayPalClient {
-  if (!deps.paypal) {
+function requirePayPal(ctx: Ctx): PayPalApi {
+  if (!ctx.paypal) {
     throw new HttpError(503, "paypal_not_configured", "PayPal is not configured on this server. Set PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET (sandbox) to use this feature.");
   }
-  return deps.paypal;
+  return ctx.paypal;
+}
+
+function requireOffline(ctx: Ctx): OfflinePayPal {
+  if (!ctx.deps.offline || !ctx.paypal) throw new HttpError(404, "not_found", "Simulated buyer actions exist only in the offline demo (PAYPAL_OFFLINE_DEMO=true).");
+  return ctx.paypal as OfflinePayPal;
 }
 
 function bannerMessages(deps: ApiDeps): string[] {
   const out: string[] = [];
-  if (!deps.paypal) out.push("PayPal is not configured: invoices, shipments and disputes are disabled. Set PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET (sandbox) and restart.");
+  if (deps.offline) out.push("Offline demo: PayPal is simulated in memory for your browser only. Nothing is sent to PayPal or to anyone. Use the Simulate buttons to act as the buyer.");
+  else if (!deps.paypal) out.push("PayPal is not configured: invoices, shipments and disputes are disabled. Set PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET (sandbox) and restart.");
   if (deps.ai.name === "fake") out.push("AI runs in offline demo mode (AI_PROVIDER=fake): answers are rule-based, not from a real model.");
   if (deps.paypal && !deps.paypalConfig?.webhookId) out.push("PAYPAL_WEBHOOK_ID is not set: webhook events cannot be verified, so the event log stays empty.");
   return out;
@@ -126,8 +165,14 @@ function bannerMessages(deps: ApiDeps): string[] {
 export function healthData(deps: ApiDeps) {
   return {
     app: "okuri",
-    paypal: { configured: Boolean(deps.paypal), env: deps.paypalConfig?.env ?? null, webhookConfigured: Boolean(deps.paypalConfig?.webhookId) },
-    ai: { provider: deps.ai.name, model: deps.ai.model ?? null },
+    paypal: {
+      configured: Boolean(deps.paypal || deps.offline),
+      env: deps.offline ? "sandbox" : (deps.paypalConfig?.env ?? null),
+      offline: Boolean(deps.offline),
+      webhookConfigured: Boolean(deps.paypalConfig?.webhookId),
+    },
+    ai: { provider: deps.aiInfo?.primary.provider ?? deps.ai.name, model: deps.aiInfo?.primary.model ?? deps.ai.model ?? null, ...(deps.aiInfo?.fallback ? { fallback: deps.aiInfo.fallback } : {}) },
+    countries: Object.entries(COUNTRIES).map(([code, name]) => ({ code, name })),
     paymentPath: deps.settings.paymentPath,
     fxJpyPerUsd: deps.settings.fxJpyPerUsd,
     demoLimits: {
@@ -165,7 +210,27 @@ function daysSince(date: string | undefined, now: number): number | undefined {
   return Number.isFinite(t) ? Math.max(0, Math.floor((now - t) / 86_400_000)) : undefined;
 }
 
-const PrepareSchema = z.object({ listing: ListingForSaleSchema, buyer: BuyerSchema.optional() });
+const PrepareSchema = z.object({
+  listing: ListingForSaleSchema,
+  buyer: BuyerSchema.optional(),
+  /** Continue this draft journey (otherwise a new one starts). */
+  sale_id: z.string().max(20).optional(),
+  country: z.string().refine(isCountry, "unknown country code").optional(),
+  title_ja: z.string().max(200).optional(),
+});
+
+/** The sale to bill: the caller's draft, or a new one. Updated with what is billed now. */
+function saleToBill(ctx: Ctx, body: z.infer<typeof PrepareSchema>, alias: string, path: "invoice" | "order"): Sale {
+  const draft = ownDraftSale(ctx, body.sale_id);
+  const fields = { titleEn: body.listing.title, listing: body.listing, buyerAlias: alias, amount: body.listing.price, path };
+  if (draft) {
+    Object.assign(draft, fields, body.country ? { country: body.country } : {});
+    return draft;
+  }
+  const sale = ctx.deps.sales.create({ owner: ctx.session, ...fields, ...(body.title_ja ? { titleJa: body.title_ja } : {}), country: body.country ?? "US" });
+  ctx.deps.sales.note(sale, "Item added");
+  return sale;
+}
 
 const TrackingSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("order"), order_id: ID, capture_id: ID, carrier: z.string().trim().min(1).max(64), tracking_number: z.string().trim().min(1).max(64), notify_buyer: z.boolean().default(true) }),
@@ -202,9 +267,24 @@ const ROUTES: Route[] = [
     ai: true,
     handler: async (ctx) => {
       const { req, res, deps } = ctx;
-      const { item } = z.object({ item: JpItemSchema }).parse(await readJsonBody(req, MAX_API_BODY));
+      const { item, country } = z.object({ item: JpItemSchema, country: z.string().refine(isCountry, "unknown country code").optional() }).parse(await readJsonBody(req, MAX_API_BODY));
       ctx.startAi();
-      ok(res, await deps.agent.draftListing(item));
+      const listing = await deps.agent.draftListing(item);
+      // Every draft starts a journey (private to this visitor until PayPal holds an invoice).
+      const sale = deps.sales.create({
+        owner: ctx.session,
+        titleJa: item.title_ja,
+        titleEn: listing.title.slice(0, 127),
+        listing: { title: listing.title.slice(0, 127), description: listing.description.slice(0, 1000), price: { currency_code: "USD", value: listing.price.usd }, quantity: 1 },
+        buyerAlias: "",
+        country: country ?? "US",
+        amount: { currency_code: "USD", value: listing.price.usd },
+        path: deps.settings.paymentPath,
+        draftedBy: listing.generated_by,
+      });
+      deps.sales.note(sale, "Item added (Japanese)");
+      deps.sales.note(sale, "English draft prepared");
+      ok(res, { ...listing, sale_id: sale.id });
     },
   },
   {
@@ -218,14 +298,19 @@ const ROUTES: Route[] = [
       deps.proposals.assertRoom(1, limitKey(ctx.address));
       deps.limits.checkProposals(ctx.session, limitKey(ctx.address));
       ctx.startAi();
-      if (deps.settings.paymentPath === "order") {
-        const prepared = await deps.agent.preparePaymentLink(body.listing, { alias });
-        const proposal = propose(ctx, "create_payment_link", `Create payment link for ${showMoney(body.listing.price)} for ${alias}: ${body.listing.title}`, prepared.payload, prepared.buyer_message.note);
-        return ok(res, { path: "order", proposal: publicProposal(ctx, proposal), buyer_message: prepared.buyer_message, generated_by: prepared.generated_by });
+      const path = deps.settings.paymentPath;
+      const sale = saleToBill(ctx, body, alias, path);
+      const marker = saleMarker(sale.id, sale.country);
+      if (path === "order") {
+        const prepared = await deps.agent.preparePaymentLink(body.listing, { alias }, marker);
+        const proposal = propose(ctx, "create_payment_link", `Create payment link for ${showMoney(body.listing.price)} for ${alias}: ${body.listing.title}`, prepared.payload, prepared.buyer_message.note, sale.id);
+        deps.sales.note(sale, "Payment link prepared, awaiting your approval");
+        return ok(res, { path: "order", sale_id: sale.id, proposal: publicProposal(ctx, proposal), buyer_message: prepared.buyer_message, generated_by: prepared.generated_by });
       }
-      const prepared = await deps.agent.prepareInvoice(body.listing, { alias });
-      const proposal = propose(ctx, "create_and_send_invoice", `Send invoice for ${showMoney(body.listing.price)} to ${alias}: ${body.listing.title}`, prepared.payload);
-      ok(res, { path: "invoice", proposal: publicProposal(ctx, proposal), buyer_message: prepared.buyer_message, generated_by: prepared.generated_by });
+      const prepared = await deps.agent.prepareInvoice(body.listing, { alias }, marker);
+      const proposal = propose(ctx, "create_and_send_invoice", `Send invoice for ${showMoney(body.listing.price)} to ${alias}: ${body.listing.title}`, prepared.payload, undefined, sale.id);
+      deps.sales.note(sale, "Invoice prepared, awaiting your approval");
+      ok(res, { path: "invoice", sale_id: sale.id, proposal: publicProposal(ctx, proposal), buyer_message: prepared.buyer_message, generated_by: prepared.generated_by });
     },
   },
   {
@@ -239,18 +324,21 @@ const ROUTES: Route[] = [
       deps.proposals.assertRoom(1, limitKey(ctx.address));
       deps.limits.checkProposals(ctx.session, limitKey(ctx.address));
       ctx.startAi();
-      const prepared = await deps.agent.preparePaymentLink(body.listing, { alias });
-      const proposal = propose(ctx, "create_payment_link", `Create payment link for ${showMoney(body.listing.price)} for ${alias}: ${body.listing.title}`, prepared.payload, prepared.buyer_message.note);
-      ok(res, { path: "order", proposal: publicProposal(ctx, proposal), buyer_message: prepared.buyer_message, generated_by: prepared.generated_by });
+      const sale = saleToBill(ctx, body, alias, "order");
+      const prepared = await deps.agent.preparePaymentLink(body.listing, { alias }, saleMarker(sale.id, sale.country));
+      const proposal = propose(ctx, "create_payment_link", `Create payment link for ${showMoney(body.listing.price)} for ${alias}: ${body.listing.title}`, prepared.payload, prepared.buyer_message.note, sale.id);
+      deps.sales.note(sale, "Payment link prepared, awaiting your approval");
+      ok(res, { path: "order", sale_id: sale.id, proposal: publicProposal(ctx, proposal), buyer_message: prepared.buyer_message, generated_by: prepared.generated_by });
     },
   },
   {
     method: "GET",
     pattern: /^\/api\/invoices$/,
     paypalRead: true,
-    handler: async ({ res, deps, query }) => {
+    handler: async (ctx) => {
+      const { res, deps, query } = ctx;
       const page = z.coerce.number().int().min(1).max(1000).catch(1).parse(query.get("page") ?? 1);
-      const list = await deps.reads.listInvoices(requirePayPal(deps), { page, page_size: 20, total_required: true });
+      const list = await deps.reads.listInvoices(requirePayPal(ctx), { page, page_size: 20, total_required: true });
       ok(res, { total_items: list.total_items ?? null, total_pages: list.total_pages ?? null, page, invoices: (list.items ?? []).map((inv) => invoiceRow(inv, deps.buyers)) });
     },
   },
@@ -263,7 +351,7 @@ const ROUTES: Route[] = [
       const { req, res, deps } = ctx;
       const body = z.object({ invoice_ids: z.array(ID).max(20).optional() }).parse(await readJsonBody(req, MAX_API_BODY));
       deps.limits.checkProposals(ctx.session, limitKey(ctx.address));
-      const list = await deps.reads.listInvoices(requirePayPal(deps), { page: 1, page_size: 50 });
+      const list = await deps.reads.listInvoices(requirePayPal(ctx), { page: 1, page_size: 50 });
       const wanted = body.invoice_ids ? new Set(body.invoice_ids) : undefined;
       const now = Date.now();
       const candidates = (list.items ?? []).filter((inv) => inv.status && UNPAID.has(inv.status) && (!wanted || wanted.has(inv.id)));
@@ -289,7 +377,7 @@ const ROUTES: Route[] = [
       }
       const numbers = new Map(unpaid.map((u) => [u.invoice_id, u.invoice_number]));
       const proposals = reminders.map((r) =>
-        propose(ctx, "send_invoice_reminder", `Send PayPal's standard reminder for invoice ${numbers.get(r.invoice_id) ?? r.invoice_id}`, r.payload, r.copy_for_dm),
+        propose(ctx, "send_invoice_reminder", `Send PayPal's standard reminder for invoice ${numbers.get(r.invoice_id) ?? r.invoice_id}`, r.payload, r.copy_for_dm, deps.sales.byInvoice(r.invoice_id)?.id),
       );
       ok(res, { unpaid_count: unpaid.length, proposals: proposals.map((p) => publicProposal(ctx, p)), skipped, generated_by });
     },
@@ -298,13 +386,13 @@ const ROUTES: Route[] = [
     method: "GET",
     pattern: /^\/api\/invoices\/([A-Za-z0-9_-]+)$/,
     paypalRead: true,
-    handler: async ({ res, deps, params }) => ok(res, invoiceDetail(await requirePayPal(deps).getInvoice(params[0]!), deps.buyers)),
+    handler: async (ctx) => ok(ctx.res, invoiceDetail(await requirePayPal(ctx).getInvoice(ctx.params[0]!), ctx.deps.buyers)),
   },
   {
     method: "GET",
     pattern: /^\/api\/orders\/([A-Za-z0-9_-]+)$/,
     paypalRead: true,
-    handler: async ({ res, deps, params }) => ok(res, orderView(await requirePayPal(deps).getOrder(params[0]!))),
+    handler: async (ctx) => ok(ctx.res, orderView(await requirePayPal(ctx).getOrder(ctx.params[0]!))),
   },
   {
     method: "POST",
@@ -313,7 +401,7 @@ const ROUTES: Route[] = [
     handler: async (ctx) => {
       const { req, res, deps, params } = ctx;
       await readJsonBody(req, MAX_API_BODY);
-      const paypal = requirePayPal(deps);
+      const paypal = requirePayPal(ctx);
       const orderId = params[0]!;
       const known = deps.orders.get(orderId);
       if (!known || known.owner !== ctx.session) {
@@ -332,24 +420,35 @@ const ROUTES: Route[] = [
     handler: async (ctx) => {
       const { req, res, deps } = ctx;
       const body = TrackingSchema.parse(await readJsonBody(req, MAX_API_BODY));
-      const paypal = requirePayPal(deps);
+      const paypal = requirePayPal(ctx);
+      // Only invoices and orders this demo created (registry or marker in the PayPal record).
       if (body.kind === "order") {
-        const proposal = propose(ctx, "add_order_tracking", `Add ${body.carrier} tracking ${body.tracking_number} to order ${body.order_id}`, {
-          orderId: body.order_id,
-          tracker: { capture_id: body.capture_id, tracking_number: body.tracking_number, ...carrierFor(body.carrier, "orders"), notify_payer: body.notify_buyer },
-        });
+        const check = await checkTrackingTarget(deps, paypal, { kind: "order", order_id: body.order_id });
+        const proposal = propose(
+          ctx,
+          "add_order_tracking",
+          `Add ${body.carrier} tracking ${body.tracking_number} to ${check.saleId ?? `order ${body.order_id}`}`,
+          {
+            orderId: body.order_id,
+            tracker: { capture_id: body.capture_id, tracking_number: body.tracking_number, ...carrierFor(body.carrier, "orders"), notify_payer: body.notify_buyer },
+          },
+          undefined,
+          check.saleId,
+        );
+        deps.sales.note(check.saleId ? deps.sales.get(check.saleId) : undefined, "Tracking number entered, awaiting your approval");
         return ok(res, { proposal: publicProposal(ctx, proposal) }, 201);
       }
-      let transactionId = body.transaction_id;
-      if (!transactionId && body.invoice_id) {
-        const inv = await paypal.getInvoice(body.invoice_id);
-        transactionId = (inv.payments?.transactions ?? []).find((t) => t.payment_id)?.payment_id;
-        if (!transactionId) throw new HttpError(409, "invoice_not_paid", "This invoice has no PayPal payment yet, so there is no transaction to attach tracking to.");
-      }
-      if (!transactionId) throw new HttpError(400, "invalid_input", "Give invoice_id or transaction_id");
-      const proposal = propose(ctx, "add_invoice_tracking", `Add ${body.carrier} tracking ${body.tracking_number} to transaction ${transactionId}`, {
-        trackers: [{ transaction_id: transactionId, tracking_number: body.tracking_number, status: "SHIPPED", ...carrierFor(body.carrier, "shipping"), notify_buyer: body.notify_buyer }],
-      });
+      const check = await checkTrackingTarget(deps, paypal, { kind: "invoice", ...(body.invoice_id ? { invoice_id: body.invoice_id } : {}), ...(body.transaction_id ? { transaction_id: body.transaction_id } : {}) });
+      const transactionId = check.transactionId!;
+      const proposal = propose(
+        ctx,
+        "add_invoice_tracking",
+        `Add ${body.carrier} tracking ${body.tracking_number} to ${check.saleId ?? `transaction ${transactionId}`}`,
+        { trackers: [{ transaction_id: transactionId, tracking_number: body.tracking_number, status: "SHIPPED", ...carrierFor(body.carrier, "shipping"), notify_buyer: body.notify_buyer }] },
+        undefined,
+        check.saleId,
+      );
+      deps.sales.note(check.saleId ? deps.sales.get(check.saleId) : undefined, "Tracking number entered, awaiting your approval");
       ok(res, { proposal: publicProposal(ctx, proposal) }, 201);
     },
   },
@@ -357,8 +456,9 @@ const ROUTES: Route[] = [
     method: "GET",
     pattern: /^\/api\/disputes$/,
     paypalRead: true,
-    handler: async ({ res, deps }) => {
-      const list = await deps.reads.listDisputes(requirePayPal(deps), { page_size: 50 });
+    handler: async (ctx) => {
+      const { res, deps } = ctx;
+      const list = await deps.reads.listDisputes(requirePayPal(ctx), { page_size: 50 });
       ok(res, { disputes: (list.items ?? []).map(disputeRow) });
     },
   },
@@ -366,7 +466,7 @@ const ROUTES: Route[] = [
     method: "GET",
     pattern: /^\/api\/disputes\/([A-Za-z0-9_-]+)$/,
     paypalRead: true,
-    handler: async ({ res, deps, params }) => ok(res, disputeDetail(await requirePayPal(deps).getDispute(params[0]!))),
+    handler: async (ctx) => ok(ctx.res, disputeDetail(await requirePayPal(ctx).getDispute(ctx.params[0]!))),
   },
   {
     method: "POST",
@@ -376,7 +476,7 @@ const ROUTES: Route[] = [
     handler: async (ctx) => {
       const { req, res, deps, params } = ctx;
       const body = EvidenceRequestSchema.parse(await readJsonBody(req, MAX_API_BODY));
-      const paypal = requirePayPal(deps);
+      const paypal = requirePayPal(ctx);
       deps.limits.checkProposals(ctx.session, limitKey(ctx.address), 2);
       const d = await paypal.getDispute(params[0]!);
       const tx = d.disputed_transactions?.[0];
@@ -414,11 +514,12 @@ const ROUTES: Route[] = [
       const pack = await deps.agent.disputeEvidencePack(input);
       // Only actions PayPal currently allows on this dispute become proposals (F11).
       const allowed = disputeActions(d);
+      const saleId = saleOfDispute(deps, d)?.id;
       const proposals = {
         ...(allowed.provide_evidence.allowed
-          ? { provide_evidence: publicProposal(ctx, propose(ctx, "provide_dispute_evidence", `Provide evidence for dispute ${d.dispute_id}`, pack.evidence_payload)) }
+          ? { provide_evidence: publicProposal(ctx, propose(ctx, "provide_dispute_evidence", `Provide evidence for dispute ${d.dispute_id}`, pack.evidence_payload, undefined, saleId)) }
           : {}),
-        ...(allowed.send_message.allowed ? { send_message: publicProposal(ctx, propose(ctx, "send_dispute_message", `Send reply to buyer in dispute ${d.dispute_id}`, pack.message_payload)) } : {}),
+        ...(allowed.send_message.allowed ? { send_message: publicProposal(ctx, propose(ctx, "send_dispute_message", `Send reply to buyer in dispute ${d.dispute_id}`, pack.message_payload, undefined, saleId)) } : {}),
       };
       ok(res, { pack: publicPack(pack), proposals, allowed_actions: allowed });
     },
@@ -430,9 +531,10 @@ const ROUTES: Route[] = [
     handler: async (ctx) => {
       const { req, res, deps, params } = ctx;
       const body = z.object({ note: z.string().trim().min(1).max(2000) }).parse(await readJsonBody(req, MAX_API_BODY));
-      const verdict = disputeActions(await requirePayPal(deps).getDispute(params[0]!)).accept_claim;
+      const dispute = await requirePayPal(ctx).getDispute(params[0]!);
+      const verdict = disputeActions(dispute).accept_claim;
       if (!verdict.allowed) throw new HttpError(409, "action_not_allowed", verdict.reason);
-      ok(res, { proposal: publicProposal(ctx, propose(ctx, "accept_dispute_claim", `Accept claim and refund the buyer in dispute ${params[0]}`, { disputeId: params[0]!, note: body.note })) }, 201);
+      ok(res, { proposal: publicProposal(ctx, propose(ctx, "accept_dispute_claim", `Accept claim and refund the buyer in dispute ${params[0]}`, { disputeId: params[0]!, note: body.note }, undefined, saleOfDispute(deps, dispute)?.id)) }, 201);
     },
   },
   {
@@ -453,7 +555,7 @@ const ROUTES: Route[] = [
       const found = deps.proposals.get(params[0]!, session);
       if (!found) throw new ProposalError(`proposal ${params[0]} not found`, "not_found");
       if (found.status !== "pending") throw new ProposalError(`proposal ${found.id} is ${found.status}, not pending`, "not_pending");
-      requirePayPal(deps);
+      requirePayPal(ctx);
       const key = limitKey(ctx.address);
       // All checks before the first await, so they hold for this execution (F2).
       deps.limits.checkApproval(session, key);
@@ -467,6 +569,7 @@ const ROUTES: Route[] = [
         const p = await deps.proposals.approve(found.id, session);
         if (p.status === "obsolete") deps.limits.refundWrites(writes); // nothing was written
         if (p.status !== "obsolete") deps.reads.invalidate();
+        recordExecution(deps.sales, p);
         ok(res, publicProposal(ctx, p));
       } finally {
         release();
@@ -496,20 +599,28 @@ const ROUTES: Route[] = [
     handler: async (ctx) => {
       const { req, res, deps } = ctx;
       await readJsonBody(req, MAX_API_BODY);
-      requirePayPal(deps);
+      requirePayPal(ctx);
       requireBuyer(deps, deps.buyers.aliases[0]);
       deps.limits.checkSeed(ctx.session);
       const s = deps.settings;
       const listings = DEMO_ITEMS.map((d) => ({ title: d.seed.title, description: d.seed.description, price: { currency_code: "USD", value: d.seed.price_usd }, quantity: 1 }));
+      const seedCountries = ["US", "GB", "AU", "CA"];
+      // Each sample becomes a journey; the marker ties the PayPal record to it.
+      const sales = listings.map((l, i) => {
+        const sale = deps.sales.create({ owner: ctx.session, titleJa: DEMO_ITEMS[i]!.item.title_ja, titleEn: l.title, listing: l, buyerAlias: deps.buyers.at(i).alias, country: seedCountries[i % seedCountries.length]!, amount: l.price, path: s.paymentPath });
+        deps.sales.note(sale, "Sample item added (Seed demo data)");
+        return sale;
+      });
+      const markerOf = (i: number) => saleMarker(sales[i]!.id, sales[i]!.country);
       let payload: SeedDemoDataPayload;
       if (s.paymentPath === "invoice") {
         payload = {
           invoices: listings.map((l, i) =>
-            buildInvoicePayload(l, deps.buyers.at(i).alias, { note: `Demo invoice for "${l.title}". Pay securely with PayPal (sandbox).` }, s.sellerBusinessName),
+            buildInvoicePayload(l, deps.buyers.at(i).alias, { note: `Demo invoice for "${l.title}". Pay securely with PayPal (sandbox).` }, s.sellerBusinessName, markerOf(i)),
           ),
         };
       } else {
-        payload = { orders: listings.map((l, i) => buildOrderPayload(l, deps.buyers.at(i).alias, { publicBaseUrl: s.publicBaseUrl, ...(s.sellerBusinessName ? { sellerBusinessName: s.sellerBusinessName } : {}) })) };
+        payload = { orders: listings.map((l, i) => buildOrderPayload(l, deps.buyers.at(i).alias, { publicBaseUrl: s.publicBaseUrl, ...(s.sellerBusinessName ? { sellerBusinessName: s.sellerBusinessName } : {}) }, markerOf(i))) };
       }
       const count = (payload.invoices ?? payload.orders ?? []).length;
       ok(res, { proposal: publicProposal(ctx, propose(ctx, "seed_demo_data", `Seed ${count} sample ${s.paymentPath === "invoice" ? "invoices" : "payment links"} for the demo buyers in the PayPal sandbox`, payload)) }, 201);
@@ -526,8 +637,9 @@ const ROUTES: Route[] = [
       const result = await chat(
         deps.ai,
         {
-          paypal: deps.paypal,
+          paypal: ctx.paypal,
           proposals: deps.proposals,
+          trackable: (target) => checkTrackingTarget(deps, requirePayPal(ctx), target),
           agentConfig: { fxJpyPerUsd: deps.settings.fxJpyPerUsd, maxOutputTokens: deps.settings.aiMaxOutputTokens, publicBaseUrl: deps.settings.publicBaseUrl, ...(deps.settings.sellerBusinessName ? { sellerBusinessName: deps.settings.sellerBusinessName } : {}) },
           paymentPath: deps.settings.paymentPath,
           sessionId: session,
@@ -544,7 +656,75 @@ const ROUTES: Route[] = [
       ok(res, { ...result, proposals: result.proposals.map((p) => publicProposal(ctx, p)) });
     },
   },
+  {
+    method: "GET",
+    pattern: /^\/api\/journeys$/,
+    paypalRead: true,
+    handler: async (ctx) => ok(ctx.res, await journeysFor(ctx)),
+  },
+  {
+    method: "POST",
+    pattern: /^\/api\/offline\/simulate$/,
+    handler: async (ctx) => {
+      const { req, res, deps } = ctx;
+      const body = z.object({ sale_id: z.string().max(20), action: z.enum(["payment", "dispute", "delivery"]) }).parse(await readJsonBody(req, MAX_API_BODY));
+      const paypal = requireOffline(ctx);
+      const sale = deps.sales.get(body.sale_id);
+      if (!sale || sale.owner !== ctx.session) throw new HttpError(404, "sale_not_found", "No such sale in your offline demo.");
+      const now = new Date().toISOString();
+      try {
+        if (body.action === "payment") {
+          if (sale.invoiceId) {
+            sale.transactionId = paypal.simulateInvoicePayment(sale.invoiceId);
+            sale.paidAt = now;
+            deps.sales.note(sale, "Buyer paid the invoice through PayPal (simulated)", now);
+          } else if (sale.orderId) {
+            paypal.simulateOrderApproval(sale.orderId);
+            const capture = queueCapture(deps, sale.orderId);
+            if (capture) capture.saleId = sale.id;
+            deps.sales.note(sale, "Buyer approved the payment link (simulated); capture awaits your approval", now);
+          } else throw new HttpError(409, "not_billed", "Send the invoice first.");
+        } else if (body.action === "dispute") {
+          if (!sale.invoiceId || !sale.transactionId) throw new HttpError(409, "not_paid", "A buyer can open a dispute only after paying.");
+          paypal.simulateDispute(sale.invoiceId);
+        } else {
+          if (!sale.tracking) throw new HttpError(409, "not_shipped", "Add tracking first.");
+          sale.deliveredAt = now;
+          deps.sales.note(sale, "Delivered (simulated)", now);
+        }
+      } catch (err) {
+        if (err instanceof HttpError) throw err;
+        throw new HttpError(409, "simulation_refused", err instanceof Error ? err.message : String(err));
+      }
+      ok(res, { sale_id: sale.id, action: body.action });
+    },
+  },
 ];
+
+/** Journeys the caller may see, with counts. Reads invoices and disputes once (cached). */
+async function journeysFor(ctx: Ctx) {
+  const { deps } = ctx;
+  const paypal = ctx.paypal;
+  let invoices: Map<string, Invoice> = new Map();
+  let disputes: DisputeSummary[] = [];
+  const warnings: string[] = [];
+  if (paypal) {
+    try {
+      const list = await deps.reads.listInvoices(paypal, { page: 1, page_size: 50 });
+      invoices = new Map((list.items ?? []).map((inv) => [inv.id, inv]));
+      // After a restart: recognise this app's invoices by their marker and rebuild the journey.
+      if (!deps.offline) for (const inv of list.items ?? []) if (!deps.sales.byInvoice(inv.id)) { const rebuilt = saleFromInvoice(inv, deps.buyers); if (rebuilt) deps.sales.adopt(rebuilt); }
+      disputes = (await deps.reads.listDisputes(paypal, { page_size: 50 })).items ?? [];
+    } catch (err) {
+      warnings.push(err instanceof Error && "debugId" in err ? `PayPal could not be read (debug_id ${(err as { debugId?: string }).debugId ?? "-"}); showing what this app knows.` : "PayPal could not be read; showing what this app knows.");
+    }
+  }
+  const sales = deps.sales.visibleTo(ctx.session, Boolean(deps.offline)).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const proposals = deps.proposals.list({ owner: ctx.session });
+  const jctx = { sales, invoices, disputes, proposals, offline: Boolean(deps.offline), buyers: deps.buyers, registry: deps.sales };
+  const journeys = sales.map((sale) => buildJourney(sale, jctx));
+  return { journeys, counts: journeyCounts(journeys), pending_count: proposals.filter((p) => p.status === "pending").length, warnings };
+}
 
 /** Handles /api/* requests. Returns false when no route matched the path. */
 export async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL, deps: ApiDeps): Promise<boolean> {
@@ -563,6 +743,8 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
     if (!v.ok) throw refuse(v);
   }
   if (route.paypalRead && deps.paypal) deps.limits.takeRead(key);
+  // Offline demo: the visitor's simulated PayPal (seeded on first use).
+  const paypal = deps.offline ? await deps.offline.get(session, key) : deps.paypal;
   let aiStarted = false;
   const startAi = () => {
     if (aiStarted) return;
@@ -572,7 +754,7 @@ export async function handleApi(req: IncomingMessage, res: ServerResponse, url: 
   };
   const params = route.pattern.exec(url.pathname)!.slice(1);
   try {
-    await route.handler({ req, res, params, query: url.searchParams, deps, session, address, startAi });
+    await route.handler({ req, res, params, query: url.searchParams, deps, session, address, startAi, paypal });
   } catch (err) {
     if (route.ai && !aiStarted && isInvalidInputError(err)) deps.limiter.recordInvalid(key);
     throw err;

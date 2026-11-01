@@ -50,6 +50,18 @@ export interface AppSettings {
   seedDailyCap: number;
   /** Approved actions running at the same time (EXECUTION_CONCURRENCY). */
   executionConcurrency: number;
+  /**
+   * PAYPAL_OFFLINE_DEMO=true: simulate PayPal in memory (one private world per visitor) instead
+   * of calling the sandbox. For keyless demos and screenshots; wins over PayPal credentials.
+   */
+  paypalOfflineDemo: boolean;
+}
+
+function bool(env: NodeJS.ProcessEnv, name: string): boolean {
+  const v = (env[name] ?? "").trim().toLowerCase();
+  if (v === "" || v === "false" || v === "0" || v === "no") return false;
+  if (v === "true" || v === "1" || v === "yes") return true;
+  throw new Error(`${name} must be true or false (got "${env[name]}")`);
 }
 
 function num(env: NodeJS.ProcessEnv, name: string, fallback: number, min: number, max: number, integer = false): number {
@@ -106,6 +118,7 @@ export function loadSettings(env: NodeJS.ProcessEnv = process.env): AppSettings 
     seedSessionIntervalMinutes: num(env, "SEED_SESSION_INTERVAL_MINUTES", 60, 1, 10_080),
     seedDailyCap: num(env, "SEED_DAILY_CAP", 10, 1, 10_000, true),
     executionConcurrency: num(env, "EXECUTION_CONCURRENCY", 2, 1, 100, true),
+    paypalOfflineDemo: bool(env, "PAYPAL_OFFLINE_DEMO"),
   };
 }
 
