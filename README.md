@@ -62,6 +62,7 @@ repository was created during that period. Dated log of the work (newest last):
 | --- | --- |
 | 2026-10-31 | Project scaffold: TypeScript/Node setup, PayPal REST client (OAuth token, Orders v2 create/capture, webhook endpoint with signature verification via the PayPal API), pluggable AI provider interface, tests with mocked PayPal responses, pre-publish check script, CI. |
 | 2026-11-01 | Build pass 1 (spec v1): Invoicing v2, Add Tracking, Orders tracking and Customer Disputes calls; approval gate (server-side proposals); webhook event routing; AI agent (listing, invoice, reminders, dispute evidence pack, free chat) on the Vercel AI SDK with an offline fake provider; AI rate limits and daily cap; JSON API; minimal React UI with five views. |
+| 2026-11-01 | Pass 2a (review fixes for the public demo): per-visitor demo sessions and proposal ownership; recipients only from the demo-buyer allowlist (by alias); public DTOs and email masking; limits on proposals, approvals, PayPal reads/writes, webhooks, seeding and execution; verified return page; deadlines and an "unknown" outcome for timed-out writes; AI budget per model call; redaction of contact details before AI calls; PayPal's standard reminders with a Copy-for-DM text; dispute actions only when PayPal allows them; currency precision; 3-day webhook de-duplication. |
 
 ## Setup
 
@@ -114,22 +115,29 @@ JSON under `/api/`, every answer is `{ "ok": true, "data": … }` or
 `{ "ok": false, "error": { "code", "message", … } }`. PayPal failures include PayPal's
 `debug_id` (never request headers). POST bodies must be `application/json`, 64 KB max.
 
+**Public demo mode.** There is no login. Each visitor gets a demo session (an httpOnly
+`okuri_sid` cookie); proposals belong to the session that created them, and only that session
+can list, approve or reject them. Buyers are chosen by alias (`{ "buyer": { "alias": "Demo
+buyer 1" } }`); invoices and payment links can only go to `DEMO_BUYER_EMAILS`. Responses are
+small DTOs with email addresses masked. Limits answer 429 (or 503 when busy) with
+`Retry-After` and a clear message.
+
 | Method and path | What it does |
 | --- | --- |
 | `GET /api/health` (also `/health`) | Configuration status, AI model, limits, banner messages |
 | `POST /api/listings/draft` | AI: Japanese item → English listing (rate limited) |
-| `POST /api/invoices/prepare` | AI: buyer message + invoice (or payment link) **proposal** |
-| `POST /api/payment-links/prepare` | AI: Orders v2 payment link **proposal** |
+| `POST /api/invoices/prepare` | AI: buyer note + invoice (or payment link) **proposal** for a demo buyer |
+| `POST /api/payment-links/prepare` | AI: Orders v2 payment link **proposal** for a demo buyer |
 | `GET /api/invoices`, `GET /api/invoices/{id}` | Live invoices from PayPal |
-| `POST /api/invoices/nudge` | AI: reminder **proposals** for unpaid invoices |
-| `GET /api/orders/{id}`, `POST /api/orders/{id}/capture` | Order status; capture **proposal** |
+| `POST /api/invoices/nudge` | AI: **proposals** to send PayPal's standard reminder, each with a Copy-for-DM text |
+| `GET /api/orders/{id}`, `POST /api/orders/{id}/capture` | Order status; capture **proposal** (orders created in your session, once PayPal reports `APPROVED`) |
 | `POST /api/tracking` | Tracking **proposal** (`kind: "invoice"` or `"order"`) |
 | `GET /api/disputes`, `GET /api/disputes/{id}` | Live disputes from PayPal |
-| `POST /api/disputes/{id}/evidence-pack` | AI: evidence pack + evidence and reply **proposals** |
-| `POST /api/disputes/{id}/accept-claim` | Accept-claim **proposal** |
-| `GET /api/proposals`, `POST /api/proposals/{id}/approve`, `…/reject` | The approval gate |
+| `POST /api/disputes/{id}/evidence-pack` | AI: evidence pack + evidence and reply **proposals** (only for actions PayPal currently allows) |
+| `POST /api/disputes/{id}/accept-claim` | Accept-claim **proposal** (only when PayPal allows it) |
+| `GET /api/proposals`, `POST /api/proposals/{id}/approve`, `…/reject` | The approval gate (your session's proposals only) |
 | `GET /api/events` | Webhook event log (in memory) |
-| `POST /api/demo/seed` | **Proposal** to create sample invoices/payment links |
+| `POST /api/demo/seed` | **Proposal** to create sample invoices/payment links for the demo buyers (once per hour per visitor) |
 | `POST /api/chat` | AI: free chat with tools (rate limited) |
 | `POST /webhooks/paypal` | PayPal webhook receiver (signature verified via PayPal) |
 
@@ -226,25 +234,30 @@ per call, with a clear message when a limit is hit. Model calls are aborted afte
 src/
   server.ts            node:http app: /api, /webhooks/paypal, /paypal/return, static UI
   config.ts            env -> settings (all optional)
-  http/                JSON API routes, error mapping, static file serving
+  http/                JSON API routes, demo sessions, client address, public DTOs,
+                       PayPal return page, error mapping, static file serving
   paypal/              REST client (fetch, no SDK): OAuth, Orders v2, Invoicing v2,
                        Add Tracking, Disputes, webhook verification; carrier mapping; types
-  proposals/           approval gate (ProposalStore) and the executor, the only code that
-                       calls PayPal write methods
+  proposals/           approval gate (ProposalStore), the executor (the only code that
+                       calls PayPal write methods), order registry, reminder ledger
   ai/                  provider seam, Vercel AI SDK provider, offline fake provider
   agent/               the four agent tasks, chat tools, schemas, JSON runner, fact check
-  events/              in-memory webhook event log
-  limits/              AI rate limit and daily cap
+  events/              in-memory webhook event log and 3-day de-duplication cache
+  limits/              AI limits and budget; limits on the shared PayPal account
+  privacy/             email masking for responses, redaction before AI calls
+  money.ts             currencies, precision, integer minor units
+  util/                bounded TTL map
   docs/simple-pdf.ts   tiny PDF writer for the evidence attachment
-  demo/items.ts        Japanese sample items
+  demo/                Japanese sample items, demo buyers (aliases)
 web/                   React UI (Vite), built to dist/public
 scripts/               pre-publish scan of git-tracked files
 test/                  vitest tests (PayPal and AI faked; no keys needed)
 docs/                  build spec, decisions, build log, media
 ```
 
-No database: state the app owns (proposals, events, rate-limit counters) is in memory;
-invoices and disputes are always read live from PayPal.
+No database: state the app owns (proposals, demo sessions' ownership, order registry, events,
+de-duplication ids, limit counters) is in memory and per process; invoices and disputes are
+read live from PayPal (list reads cached for 30 seconds).
 
 ## Demo media
 
