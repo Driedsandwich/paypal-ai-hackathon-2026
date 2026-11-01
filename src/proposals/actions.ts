@@ -84,6 +84,27 @@ export interface PayloadByKind {
   seed_demo_data: SeedDemoDataPayload;
 }
 
+/**
+ * PayPal refused a write, with a sentence for the seller that says why and what to do. Keeps
+ * PayPal's error (status, issues, debug_id); `extra` adds fields to the proposal's error.
+ */
+export class PayPalRefusalError extends Error {
+  constructor(
+    message: string,
+    readonly paypal: PayPalApiError,
+    readonly extra: Record<string, unknown> = {},
+  ) {
+    super(message);
+    this.name = "PayPalRefusalError";
+  }
+}
+
+/** Shown when trackers-batch answers 403 (the PayPal app lacks the shipping trackers scope). */
+export const TRACKING_NOT_AUTHORIZED_MESSAGE = "PayPal did not allow tracking for this invoice payment: the PayPal app needs the shipping trackers permission";
+
+/** PayPal's issue code when a case does not accept the evidence type that was sent. */
+export const EVIDENCE_TYPE_IS_NOT_ALLOWED = "EVIDENCE_TYPE_IS_NOT_ALLOWED";
+
 /** The link a buyer opens to pay an order: `payer-action` (payment_source flow) or `approve`. */
 export function payerLinkOf(links: PayPalLink[] | undefined): string | undefined {
   return (links?.find((l) => l.rel === "payer-action") ?? links?.find((l) => l.rel === "approve"))?.href;
@@ -198,7 +219,13 @@ export function createPayPalExecutor(getPayPal: (owner: string) => PayPalApi, op
       }
       case "add_invoice_tracking": {
         const p = payload as AddInvoiceTrackingPayload;
-        return paypal.addTrackersBatch(p.trackers);
+        try {
+          return await paypal.addTrackersBatch(p.trackers);
+        } catch (err) {
+          // Seen on the hosted demo: 403 NOT_AUTHORIZED when the app has no shipping trackers scope.
+          if (err instanceof PayPalApiError && err.status === 403) throw new PayPalRefusalError(TRACKING_NOT_AUTHORIZED_MESSAGE, err);
+          throw err;
+        }
       }
       case "provide_dispute_evidence": {
         const p = payload as ProvideEvidencePayload;
@@ -208,7 +235,18 @@ export function createPayPalExecutor(getPayPal: (owner: string) => PayPalApi, op
           contentType: a.contentType,
           data: new Uint8Array(Buffer.from(a.base64, "base64")),
         }));
-        return paypal.provideDisputeEvidence(p.disputeId, p.evidences, files);
+        try {
+          return await paypal.provideDisputeEvidence(p.disputeId, p.evidences, files);
+        } catch (err) {
+          // Seen on a sandbox CHARGEBACK case: PROOF_OF_FULFILLMENT refused although the case
+          // listed it as requested; the same facts as OTHER were accepted. The approve route
+          // offers a new OTHER proposal (it needs its own approval).
+          const refused = p.evidences.map((e) => e.evidence_type).find((t) => t !== "OTHER");
+          if (err instanceof PayPalApiError && err.status >= 400 && err.status < 500 && err.issueCodes().includes(EVIDENCE_TYPE_IS_NOT_ALLOWED) && refused) {
+            throw new PayPalRefusalError(`PayPal did not accept evidence type ${refused} on this case (${EVIDENCE_TYPE_IS_NOT_ALLOWED}). Nothing was submitted.`, err, { refused_evidence_type: refused });
+          }
+          throw err;
+        }
       }
       case "send_dispute_message": {
         const p = payload as SendDisputeMessagePayload;

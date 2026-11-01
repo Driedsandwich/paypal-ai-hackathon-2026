@@ -1,0 +1,31 @@
+{
+  "_note": "Hosted demo, real PayPal sandbox, 2026-11-01. The case fields are as reported (stage CHARGEBACK, status WAITING_FOR_SELLER_RESPONSE, reason MERCHANDISE_OR_SERVICE_NOT_RECEIVED, three evidence types REQUESTED_FROM_SELLER); ids and the amount are placeholders. provide-evidence with evidence_type PROOF_OF_FULFILLMENT and evidence_info.tracking_info (carrier_name JPN_JAPAN_POST) was refused with HTTP 4xx and issue EVIDENCE_TYPE_IS_NOT_ALLOWED; the same shipment details as evidence_type OTHER (carrier and tracking number in notes) were accepted and the case moved to UNDER_REVIEW. The error body below is rebuilt from the reported status class, issue and debug_id field in PayPal's standard error format (name, message, debug_id, details[].issue); it is not a byte-for-byte recording, and the exact status (400 or 422) was not recorded, so tests use both.",
+  "dispute": {
+    "dispute_id": "PP-R-TST-20261101",
+    "reason": "MERCHANDISE_OR_SERVICE_NOT_RECEIVED",
+    "status": "WAITING_FOR_SELLER_RESPONSE",
+    "dispute_life_cycle_stage": "CHARGEBACK",
+    "dispute_channel": "INTERNAL",
+    "dispute_amount": { "currency_code": "USD", "value": "95.00" },
+    "disputed_transactions": [
+      { "seller_transaction_id": "0TEST0000000000AB", "transaction_status": "COMPLETED", "gross_amount": { "currency_code": "USD", "value": "95.00" } }
+    ],
+    "evidences": [
+      { "evidence_type": "PROOF_OF_FULFILLMENT", "source": "REQUESTED_FROM_SELLER" },
+      { "evidence_type": "PROOF_OF_REFUND", "source": "REQUESTED_FROM_SELLER" },
+      { "evidence_type": "PROOF_OF_DELIVERY_SIGNATURE", "source": "REQUESTED_FROM_SELLER" }
+    ],
+    "links": [
+      { "rel": "self", "method": "GET", "href": "https://api-m.sandbox.paypal.com/v1/customer/disputes/PP-R-TST-20261101" },
+      { "rel": "provide_evidence", "method": "POST", "href": "https://api-m.sandbox.paypal.com/v1/customer/disputes/PP-R-TST-20261101/provide-evidence" }
+    ]
+  },
+  "error": {
+    "name": "UNPROCESSABLE_ENTITY",
+    "message": "The requested action could not be performed, semantically incorrect, or failed business validation.",
+    "debug_id": "f0e1d2c3b4a59",
+    "details": [
+      { "field": "/evidences/0/evidence_type", "issue": "EVIDENCE_TYPE_IS_NOT_ALLOWED", "description": "The evidence type is not allowed for this dispute." }
+    ]
+  }
+}

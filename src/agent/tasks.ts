@@ -388,3 +388,42 @@ function evidenceAttachments(input: EvidenceInput): { attachments: EvidenceAttac
   }
   return { attachments, described };
 }
+
+/** Carrier names for the evidence notes, from Disputes v1 `carrier_name` codes. */
+const DISPUTE_CARRIER_NAMES: Record<string, string> = {
+  JPN_JAPAN_POST: "Japan Post",
+  JPN_YAMATO: "Yamato Transport",
+  JPN_SAGAWA: "Sagawa Express",
+  DHL_JP: "DHL Japan",
+  DHL: "DHL",
+  FEDEX: "FedEx",
+  UPS: "UPS",
+  USPS: "USPS",
+};
+
+/**
+ * After PayPal refused an evidence type (EVIDENCE_TYPE_IS_NOT_ALLOWED): the same submission as
+ * evidence type OTHER, with the shipment details (carrier, tracking number, tracking URL) written
+ * into the notes, because OTHER carries no tracking_info. Attachments stay as they were. The
+ * shipment lines are kept whole; the earlier notes are shortened if the 2000-character limit
+ * needs it. Undefined when everything was OTHER already (no loop).
+ */
+export function otherEvidenceFallback(payload: ProvideEvidencePayload): ProvideEvidencePayload | undefined {
+  if (!payload.evidences.some((e) => e.evidence_type !== "OTHER")) return undefined;
+  const notes = payload.evidences.map((e) => e.notes?.trim()).filter((n): n is string => Boolean(n));
+  const shipments = payload.evidences.flatMap((e) => e.evidence_info?.tracking_info ?? []);
+  const lines = shipments.map((t) => {
+    const carrier = t.carrier_name === "OTHER" ? (t.carrier_name_other ?? "another carrier") : (DISPUTE_CARRIER_NAMES[t.carrier_name] ?? t.carrier_name);
+    return `Shipment: carrier ${carrier}, tracking number ${t.tracking_number}${t.tracking_url ? `, tracking page ${t.tracking_url}` : ""}.`;
+  });
+  const tail = lines.join("\n");
+  const room = 2000 - (tail ? tail.length + 2 : 0);
+  let head = [...new Set(notes)].join("\n\n");
+  if (head.length > room) head = `${head.slice(0, Math.max(0, room - 1)).trimEnd()}…`;
+  const text = [head, tail].filter(Boolean).join("\n\n").slice(0, 2000);
+  return {
+    disputeId: payload.disputeId,
+    evidences: [{ evidence_type: "OTHER", notes: text || "Evidence for this case." }],
+    attachments: payload.attachments.map((a) => ({ ...a })),
+  };
+}

@@ -10,6 +10,7 @@ import { DEMO_ITEMS } from "../demo/items.js";
 import type { EventCategory, EventLog } from "../events/log.js";
 import type { AiLimiter, LimitResult } from "../limits/rate-limit.js";
 import { writeCost, type DemoLimits } from "../limits/demo-limits.js";
+import { LimitError } from "../limits/limits.js";
 import type { PayPalReadCache } from "../paypal/read-cache.js";
 import { showMoney } from "../money.js";
 import { carrierFor } from "../paypal/carriers.js";
@@ -17,8 +18,8 @@ import { allowedActionList, disputeActions, sellerActionState } from "../paypal/
 import type { PayPalApi, OfflinePayPal } from "../paypal/offline.js";
 import type { PayPalConfig } from "../paypal/config.js";
 import type { Invoice } from "../paypal/types.js";
-import type { SeedDemoDataPayload } from "../proposals/actions.js";
-import { buildInvoicePayload, buildOrderPayload } from "../agent/tasks.js";
+import type { ProvideEvidencePayload, SeedDemoDataPayload } from "../proposals/actions.js";
+import { buildInvoicePayload, buildOrderPayload, otherEvidenceFallback } from "../agent/tasks.js";
 import type { OrderRegistry } from "../proposals/order-registry.js";
 import type { ReminderLedger } from "../proposals/reminder-ledger.js";
 import { PROPOSAL_STATUSES, ProposalError, type Proposal, type ProposalKind, type ProposalStatus, type ProposalStore } from "../proposals/store.js";
@@ -106,6 +107,49 @@ function propose<P>(ctx: Ctx, kind: ProposalKind, title: string, payload: P, cop
   ctx.deps.proposals.assertRoom(1, key);
   ctx.deps.limits.takeProposals(ctx.session, key);
   return ctx.deps.proposals.propose(kind, title, payload, { owner: ctx.session, address: limitKey(ctx.address), ...(copyForDm ? { copyForDm } : {}), ...(saleId ? { saleId } : {}) });
+}
+
+/**
+ * PayPal refused the evidence type (EVIDENCE_TYPE_IS_NOT_ALLOWED): the failed proposal stays
+ * failed, and a new proposal of type OTHER with the shipment details in the notes is offered.
+ * It needs the seller's approval like any other. When the proposal limits refuse it, the
+ * failed proposal is still returned, with a warning.
+ */
+function evidenceTypeFollowUp(ctx: Ctx, p: Proposal): { follow_up_proposal?: ReturnType<typeof publicProposal>; warnings?: string[] } {
+  const error = p.error as Record<string, unknown> | undefined;
+  if (p.kind !== "provide_dispute_evidence" || p.status !== "failed" || !error?.refused_evidence_type) return {};
+  const payload = otherEvidenceFallback(p.payload as ProvideEvidencePayload);
+  if (!payload) return {};
+  try {
+    const next = propose(ctx, "provide_dispute_evidence", `Provide evidence (type OTHER, shipment details in the notes) for dispute ${payload.disputeId}`, payload, undefined, p.saleId);
+    error.follow_up_proposal_id = next.id;
+    error.message = `${String(error.message)} A new proposal with evidence type OTHER, with the shipment details in the notes, is ready for your approval.`;
+    return { follow_up_proposal: publicProposal(ctx, next) };
+  } catch (err) {
+    if (err instanceof LimitError || err instanceof HttpError || err instanceof ProposalError) return { warnings: [`A new proposal of type OTHER could not be prepared: ${err.message}`] };
+    throw err;
+  }
+}
+
+const DISPUTE_KINDS: ReadonlySet<ProposalKind> = new Set(["provide_dispute_evidence", "send_dispute_message", "accept_dispute_claim"]);
+
+/**
+ * After a dispute action ran (or turned out obsolete), reads the case again straight from
+ * PayPal (not through the list cache) and registers it, so "Open a case by ID", the case
+ * detail and the dispute list show the new status at once. A failing read only adds a warning.
+ */
+async function rereadDisputeAfter(ctx: Ctx, p: Proposal): Promise<{ dispute?: ReturnType<typeof disputeDetail> & { sale_id?: string }; dispute_warning?: string }> {
+  if (!DISPUTE_KINDS.has(p.kind) || (p.status !== "executed" && p.status !== "obsolete") || !ctx.paypal) return {};
+  const id = (p.payload as { disputeId?: string }).disputeId;
+  if (!id) return {};
+  try {
+    const d = await readAndRegister(discoveryDeps(ctx.deps), ctx.paypal, id, "by_id");
+    ctx.deps.reads.invalidate();
+    const sale = saleOfDispute(ctx.deps, d);
+    return { dispute: { ...disputeDetail(d), ...(sale ? { sale_id: sale.id } : {}) } };
+  } catch (err) {
+    return { dispute_warning: readWarning(err, `Case ${id}`) };
+  }
 }
 
 /** The caller's sale, if it may still be billed (draft, no invoice or order yet). */
@@ -632,7 +676,9 @@ const ROUTES: Route[] = [
         if (p.status === "obsolete") deps.limits.refundWrites(writes); // nothing was written
         if (p.status !== "obsolete") deps.reads.invalidate();
         recordExecution(deps.sales, p);
-        ok(res, publicProposal(ctx, p));
+        const followUp = evidenceTypeFollowUp(ctx, p);
+        const dispute = await rereadDisputeAfter(ctx, p);
+        ok(res, { ...publicProposal(ctx, p), ...followUp, ...dispute });
       } finally {
         release();
       }

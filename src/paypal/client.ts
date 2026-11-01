@@ -99,6 +99,11 @@ export class PayPalApiError extends Error {
       : [];
   }
 
+  /** PayPal's issue codes from `details[].issue` (e.g. EVIDENCE_TYPE_IS_NOT_ALLOWED). */
+  issueCodes(): string[] {
+    return this.details.map((d) => d.issue).filter((x): x is string => Boolean(x));
+  }
+
   /** What the seller may see: status, PayPal error name, issues and debug_id. */
   toSafeJSON(): { message: string; status: number; name?: string; debugId?: string; issues?: string[] } {
     const issues = this.details.map((d) => [d.issue, d.description].filter(Boolean).join(": ")).filter(Boolean);

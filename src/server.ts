@@ -18,7 +18,7 @@ import { PayPalReadCache } from "./paypal/read-cache.js";
 import { clientAddress, limitKey } from "./http/client-address.js";
 import { ensureSession, isSecureRequest } from "./http/session.js";
 import { PayPalApiError, PayPalClient, PayPalTimeoutError, handlePayPalWebhook, type PayPalConfig } from "./paypal/index.js";
-import { createPayPalExecutor } from "./proposals/actions.js";
+import { createPayPalExecutor, PayPalRefusalError } from "./proposals/actions.js";
 import { OrderRegistry } from "./proposals/order-registry.js";
 import { ReminderLedger } from "./proposals/reminder-ledger.js";
 import { DemoBuyers } from "./demo/buyers.js";
@@ -61,6 +61,7 @@ export interface AppOptions {
 
 /** What a visitor may see about a failed execution: no free-form internal messages. */
 export function describeExecutionError(err: unknown, log: (msg: string) => void = () => {}): Record<string, unknown> {
+  if (err instanceof PayPalRefusalError) return { message: err.message, paypal: err.paypal.toSafeJSON(), ...err.extra };
   if (err instanceof PayPalApiError) return { message: "PayPal could not complete the request", paypal: err.toSafeJSON() };
   if (err instanceof PayPalTimeoutError) {
     return err.write

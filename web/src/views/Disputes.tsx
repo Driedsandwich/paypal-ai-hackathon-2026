@@ -123,13 +123,13 @@ export function DisputesView({ health, data, refresh, route }: ViewProps) {
         )}
       </section>
       <section className="inbox-detail" aria-label="Dispute">
-        {selectedId ? <DisputeCase key={selectedId} disputeId={selectedId} journey={saleOf.get(selectedId)} refresh={refresh} /> : <p className="empty-note">Select a dispute.</p>}
+        {selectedId ? <DisputeCase key={selectedId} disputeId={selectedId} journey={saleOf.get(selectedId)} refresh={refresh} reloadList={() => void load.run()} /> : <p className="empty-note">Select a dispute.</p>}
       </section>
     </div>
   );
 }
 
-function DisputeCase({ disputeId, journey, refresh }: { disputeId: string; journey?: Journey; refresh: () => Promise<void> }) {
+function DisputeCase({ disputeId, journey, refresh, reloadList }: { disputeId: string; journey?: Journey; refresh: () => Promise<void>; reloadList: () => void }) {
   const [detail, setDetail] = useState<DisputeDetail | null>(null);
   const [form, setForm] = useState({
     invoice_id: journey?.invoice_id ?? "",
@@ -154,6 +154,13 @@ function DisputeCase({ disputeId, journey, refresh }: { disputeId: string; journ
   }, [journey?.id]);
   const load = useAction(async () => setDetail(await api.get<DisputeDetail>(`/api/disputes/${encodeURIComponent(disputeId)}`)));
   useEffect(() => void load.run(), [disputeId]);
+  /** After an approval: show the case as PayPal answered right after the action (or read it again). */
+  const caseChanged = (p: Proposal) => {
+    if (p.dispute) setDetail(p.dispute as DisputeDetail);
+    else if (p.status === "executed" || p.status === "obsolete") void load.run();
+    if (p.status === "executed" || p.status === "obsolete") reloadList();
+    void refresh();
+  };
 
   const build = useAction(async () => {
     const body = {
@@ -229,7 +236,7 @@ function DisputeCase({ disputeId, journey, refresh }: { disputeId: string; journ
         {accept && (
           <div className="proposal-block">
             <p><strong>Accept claim and refund</strong> · {(accept.payload as { note?: string }).note}</p>
-            <DecisionButtons proposal={accept} onDone={(p) => { setAccept(p); void refresh(); }} />
+            <DecisionButtons proposal={accept} onDone={(p) => { setAccept(p); caseChanged(p); }} />
             <ProposalOutcome proposal={accept} />
           </div>
         )}
@@ -250,7 +257,7 @@ function DisputeCase({ disputeId, journey, refresh }: { disputeId: string; journ
             </div>
             <p className="muted small">Attachments: {result.pack.attachments.map((a) => `${a.name} (${a.description})`).join(", ") || "none"}</p>
             {result.proposals.provide_evidence ? (
-              <ProposalBlock title="Submit evidence" proposal={result.proposals.provide_evidence} text={result.pack.evidence_notes} refresh={refresh} />
+              <ProposalBlock title="Submit evidence" proposal={result.proposals.provide_evidence} text={result.pack.evidence_notes} onDone={caseChanged} />
             ) : (
               <>
                 <p className="muted small">No evidence proposal: {result.allowed_actions.provide_evidence.reason}</p>
@@ -261,7 +268,7 @@ function DisputeCase({ disputeId, journey, refresh }: { disputeId: string; journ
               </>
             )}
             {result.proposals.send_message ? (
-              <ProposalBlock title="Send reply to the buyer" proposal={result.proposals.send_message} text={result.pack.reply_draft} refresh={refresh} />
+              <ProposalBlock title="Send reply to the buyer" proposal={result.proposals.send_message} text={result.pack.reply_draft} onDone={caseChanged} />
             ) : (
               <>
                 <p className="muted small">No message proposal: {result.allowed_actions.send_message.reason}</p>
@@ -275,15 +282,26 @@ function DisputeCase({ disputeId, journey, refresh }: { disputeId: string; journ
   );
 }
 
-function ProposalBlock({ title, proposal, text, refresh }: { title: string; proposal: Proposal; text: string; refresh: () => Promise<void> }) {
+function ProposalBlock({ title, proposal, text, onDone }: { title: string; proposal: Proposal; text: string; onDone: (p: Proposal) => void }) {
   const [p, setP] = useState(proposal);
+  const next = p.follow_up_proposal;
   return (
     <div className="proposal-block">
       <p><strong>{title}</strong></p>
       <p className="pre">{text}</p>
       <PayloadDetails proposal={p} />
-      <DecisionButtons proposal={p} onDone={(next) => { setP(next); void refresh(); }} />
+      <DecisionButtons proposal={p} onDone={(n) => { setP(n); onDone(n); }} />
       <ProposalOutcome proposal={p} />
+      {p.warnings?.map((w) => <p key={w} className="muted small">{w}</p>)}
+      {p.dispute_warning && <p className="muted small">{p.dispute_warning}</p>}
+      {next && (
+        <ProposalBlock
+          title="Submit evidence as type OTHER (shipment details in the notes)"
+          proposal={next}
+          text={((next.payload as { evidences?: Array<{ notes?: string }> }).evidences ?? []).map((e) => e.notes ?? "").join("\n\n")}
+          onDone={onDone}
+        />
+      )}
     </div>
   );
 }

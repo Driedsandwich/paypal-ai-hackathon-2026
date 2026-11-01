@@ -67,7 +67,13 @@ export interface Proposal {
   createdAt: string;
   decidedAt?: string;
   result?: unknown;
-  error?: { message?: string; needsCheck?: boolean; paypal?: ApiErrorBody["paypal"] };
+  error?: { message?: string; needsCheck?: boolean; paypal?: ApiErrorBody["paypal"]; follow_up_proposal_id?: string };
+  /** Approve response only: a new proposal offered after PayPal refused this one (e.g. evidence type OTHER). */
+  follow_up_proposal?: Proposal;
+  /** Approve response only, dispute actions: the case as PayPal shows it right after the action. */
+  dispute?: unknown;
+  dispute_warning?: string;
+  warnings?: string[];
 }
 
 export interface Money {
