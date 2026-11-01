@@ -57,5 +57,8 @@ describe("invoice note and shipping", () => {
 
   it("reads amounts with signs, codes and grouping", () => {
     expect(amountsIn("US$80, 15.00 USD, JPY 12,000 and 3 bowls")).toEqual([8000, 1500, 1200000]);
+    // Carrier names are not currencies: a note about EMS keeps its words.
+    expect(amountsIn("I will ship by EMS 3 to 5 days after payment.")).toEqual([]);
+    expect(noteMatchingTotal("I will ship by EMS 3 to 5 days after payment.", LISTING.title, listingTotals(LISTING))).toBe("I will ship by EMS 3 to 5 days after payment.");
   });
 });
