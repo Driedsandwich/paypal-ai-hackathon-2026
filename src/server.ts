@@ -1,7 +1,7 @@
 import { createServer, type Server } from "node:http";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { createAiProviderFromEnv, createFallbackProviderFromEnv, FakeAiProvider, withFallback } from "./ai/index.js";
+import { createAiSetupFromEnv, FakeAiProvider, withFallback, type AiSetupWarnings } from "./ai/index.js";
 import { withAiBudget } from "./ai/budget.js";
 import { offlineReply } from "./ai/offline.js";
 import type { AiProvider } from "./ai/provider.js";
@@ -44,6 +44,8 @@ export interface AppOptions {
   aiFallback?: AiProvider;
   /** Display info about primary and fallback AI providers (for the header). */
   aiInfo?: ApiDeps["aiInfo"];
+  /** Missing AI credentials found at startup (banner and /api/health). */
+  aiWarnings?: AiSetupWarnings;
   sales?: SaleRegistry;
   /** Known dispute ids (list, webhooks, by id). */
   disputes?: DisputeRegistry;
@@ -128,6 +130,7 @@ export function buildDeps(options: AppOptions = {}): ApiDeps & { log: (msg: stri
     sales,
     disputes: options.disputes ?? new DisputeRegistry(),
     ...(aiInfo ? { aiInfo } : {}),
+    ...(options.aiWarnings && (options.aiWarnings.primary || options.aiWarnings.fallback) ? { aiWarnings: options.aiWarnings } : {}),
     ai,
     agent: new Agent(ai, {
       fxJpyPerUsd: settings.fxJpyPerUsd,
@@ -236,17 +239,18 @@ const isMain = process.argv[1] !== undefined && import.meta.url === pathToFileUR
 if (isMain) {
   const settings = loadSettings();
   const paypalConfig = loadOptionalPayPalConfig();
-  const ai = createAiProviderFromEnv(process.env, settings.aiMaxOutputTokens);
-  const fallback = createFallbackProviderFromEnv(process.env, settings.aiMaxOutputTokens);
+  // A missing AI key never stops the server: offline AI or no fallback, shown in the banner.
+  const { ai, fallback: aiFallback, warnings: aiWarnings } = createAiSetupFromEnv(process.env, settings.aiMaxOutputTokens);
   const log = (msg: string) => console.log(`[okuri] ${msg}`);
   const staticDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "public");
-  const options: AppOptions = { settings, ai, staticDir, log, ...(paypalConfig ? { paypalConfig } : {}), ...(fallback.provider ? { aiFallback: fallback.provider } : {}) };
+  const options: AppOptions = { settings, ai, aiWarnings, staticDir, log, ...(paypalConfig ? { paypalConfig } : {}), ...(aiFallback ? { aiFallback } : {}) };
   for (const w of legacySettingWarnings()) log(`warning: ${w}`);
-  if (fallback.warning) log(`warning: ${fallback.warning}`);
+  if (aiWarnings.primary) log(`warning: ${aiWarnings.primary}`);
+  if (aiWarnings.fallback) log(`warning: ${aiWarnings.fallback}`);
   const app = createApp(options);
   app.listen(settings.port, () => {
     log(`Listening on http://localhost:${settings.port}`);
-    if (fallback.provider) log(`AI fallback: ${fallback.provider.name}${fallback.provider.model ? ` (${fallback.provider.model})` : ""}, ${settings.aiFallbackDailyCap} calls/day`);
+    if (aiFallback) log(`AI fallback: ${aiFallback.name}${aiFallback.model ? ` (${aiFallback.model})` : ""}, ${settings.aiFallbackDailyCap} calls/day`);
     log(`PayPal: ${settings.paypalOfflineDemo ? "offline demo (simulated in memory)" : paypalConfig ? paypalConfig.env : "not configured"} | AI: ${ai.name}${ai.model ? ` (${ai.model})` : ""} | payment path: ${settings.paymentPath}`);
     void warmUp(buildDeps(options), log);
   });

@@ -49,6 +49,8 @@ export interface ApiDeps {
   ai: AiProvider;
   /** Display info about the AI providers (primary and optional fallback). */
   aiInfo?: { primary: { provider: string; model: string | null }; fallback?: { provider: string; model: string | null } };
+  /** AI credentials missing at startup (the server runs on with offline AI or no fallback). */
+  aiWarnings?: { primary?: string; fallback?: string };
   agent: Agent;
   events: EventLog;
   proposals: ProposalStore;
@@ -169,7 +171,8 @@ function bannerMessages(deps: ApiDeps): string[] {
   const out: string[] = [];
   if (deps.offline) out.push("Offline demo: PayPal is simulated in memory for your browser only. Nothing is sent to PayPal or to anyone. Use the Simulate buttons to act as the buyer.");
   else if (!deps.paypal) out.push("PayPal is not configured: invoices, shipments and disputes are disabled. Set PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET (sandbox) and restart.");
-  if (deps.ai.name === "fake") out.push("AI runs in offline demo mode (AI_PROVIDER=fake): answers are rule-based, not from a real model.");
+  if (deps.aiWarnings?.primary) out.push(`AI is not configured: ${deps.aiWarnings.primary} Set the key and restart.`);
+  else if (deps.ai.name === "fake") out.push("AI runs in offline demo mode (AI_PROVIDER=fake): answers are rule-based, not from a real model.");
   if (deps.paypal && !deps.paypalConfig?.webhookId) out.push("PAYPAL_WEBHOOK_ID is not set: webhook events cannot be verified, so the event log stays empty.");
   return out;
 }
@@ -183,7 +186,14 @@ export function healthData(deps: ApiDeps) {
       offline: Boolean(deps.offline),
       webhookConfigured: Boolean(deps.paypalConfig?.webhookId),
     },
-    ai: { provider: deps.aiInfo?.primary.provider ?? deps.ai.name, model: deps.aiInfo?.primary.model ?? deps.ai.model ?? null, ...(deps.aiInfo?.fallback ? { fallback: deps.aiInfo.fallback } : {}) },
+    ai: {
+      provider: deps.aiInfo?.primary.provider ?? deps.ai.name,
+      model: deps.aiInfo?.primary.model ?? deps.ai.model ?? null,
+      ...(deps.aiInfo?.fallback ? { fallback: deps.aiInfo.fallback } : {}),
+      // Present only when a credential was missing at startup.
+      ...(deps.aiWarnings?.primary ? { configured: false } : {}),
+      ...(deps.aiWarnings ? { warnings: [deps.aiWarnings.primary, deps.aiWarnings.fallback].filter((w): w is string => Boolean(w)) } : {}),
+    },
     countries: Object.entries(COUNTRIES).map(([code, name]) => ({ code, name })),
     paymentPath: deps.settings.paymentPath,
     fxJpyPerUsd: deps.settings.fxJpyPerUsd,

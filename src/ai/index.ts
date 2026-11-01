@@ -70,6 +70,32 @@ export function createFallbackProviderFromEnv(env: NodeJS.ProcessEnv = process.e
   return { provider: sdkProvider(name, apiKey, modelId, maxOutputTokens, AI_FALLBACK_TIMEOUT_MS) };
 }
 
+/** What the server could not set up for AI, in words for the banner and /api/health. */
+export interface AiSetupWarnings {
+  /** The primary's key is missing: the offline AI answers instead. */
+  primary?: string;
+  /** The fallback's key is missing: no fallback. */
+  fallback?: string;
+}
+
+/**
+ * Startup version of the two factories above: a missing credential never stops the server.
+ * Primary key missing: the offline (rule-based) provider answers and no fallback is used, so
+ * every answer comes from one clearly labelled source. Fallback key missing: no fallback.
+ * An unknown provider name still throws (a typo should be fixed, not hidden).
+ */
+export function createAiSetupFromEnv(env: NodeJS.ProcessEnv = process.env, maxOutputTokens = 2000): { ai: AiProvider; fallback?: AiProvider; warnings: AiSetupWarnings } {
+  const name = parseAiProviderName(env.AI_PROVIDER);
+  const fb = createFallbackProviderFromEnv(env, maxOutputTokens);
+  const warnings: AiSetupWarnings = {};
+  if (name !== "fake" && !(env.AI_API_KEY ?? "").trim()) {
+    warnings.primary = `AI_API_KEY is not set for AI_PROVIDER=${name}, so the offline AI answers (rule-based, not a real model)${fb.provider || fb.warning ? " and the fallback is not used" : ""}.`;
+    return { ai: new FakeAiProvider([offlineReply]), warnings };
+  }
+  if (fb.warning) warnings.fallback = fb.warning;
+  return { ai: createAiProviderFromEnv(env, maxOutputTokens), ...(fb.provider ? { fallback: fb.provider } : {}), warnings };
+}
+
 /**
  * Picks a provider from AI_PROVIDER / AI_MODEL / AI_API_KEY.
  * Empty or "fake" selects the offline provider, which needs no key and no network.
