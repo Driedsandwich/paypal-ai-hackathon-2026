@@ -22,9 +22,17 @@ export interface WebhookResponse {
 export interface WebhookHandlerDeps {
   webhookId: string | undefined;
   verify: (req: VerifyWebhookSignatureRequest) => Promise<boolean>;
-  /** Called only for events whose signature PayPal confirmed. Empty for now. */
+  /** Called only for events whose signature PayPal confirmed. */
   onEvent?: (event: PayPalWebhookEvent) => Promise<void> | void;
+  /**
+   * True when this event id was already handled. Such a redelivery is answered 200 without
+   * another verification call (nothing is processed again). Ids are only remembered after a
+   * successful verification, so a forged event cannot block the real one.
+   */
+  isDuplicate?: (eventId: string) => boolean;
 }
+
+const EVENT_ID = /^[A-Za-z0-9._:-]{1,128}$/;
 
 const HEADER_MAP = {
   auth_algo: "paypal-auth-algo",
@@ -54,8 +62,14 @@ export async function handlePayPalWebhook(req: WebhookRequest, deps: WebhookHand
   } catch {
     return { status: 400, body: { ok: false, error: "invalid JSON" } };
   }
-  if (!event || typeof event !== "object" || typeof event.event_type !== "string") {
+  if (!event || typeof event !== "object" || typeof event.event_type !== "string" || !event.event_type) {
     return { status: 400, body: { ok: false, error: "not a webhook event" } };
+  }
+  if (typeof event.id !== "string" || !EVENT_ID.test(event.id)) {
+    return { status: 400, body: { ok: false, error: "event id missing or invalid" } };
+  }
+  if (deps.isDuplicate?.(event.id)) {
+    return { status: 200, body: { ok: true } };
   }
 
   const fields: Partial<Record<keyof typeof HEADER_MAP, string>> = {};
@@ -79,7 +93,6 @@ export async function handlePayPalWebhook(req: WebhookRequest, deps: WebhookHand
     return { status: 400, body: { ok: false, error: "signature verification failed" } };
   }
 
-  // TODO: route events (e.g. CHECKOUT.ORDER.APPROVED, PAYMENT.CAPTURE.COMPLETED) once the project is chosen.
   await deps.onEvent?.(event);
   return { status: 200, body: { ok: true } };
 }

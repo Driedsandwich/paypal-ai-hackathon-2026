@@ -1,4 +1,5 @@
 import type { PayPalWebhookEvent } from "../paypal/webhook.js";
+import { TtlMap } from "../util/ttl-map.js";
 
 /** Webhook event types this app acts on (spec 3.1). Others are logged as "ignored". */
 export const ROUTED_EVENT_TYPES = [
@@ -71,21 +72,52 @@ function summarize(event: PayPalWebhookEvent): { summary: string; resourceId?: s
   }
 }
 
+/** PayPal retries a webhook delivery for up to 3 days, so ids are remembered that long. */
+export const WEBHOOK_DEDUP_TTL_MS = 3 * 86_400_000;
+export const WEBHOOK_DEDUP_MAX = 20_000;
+
+/**
+ * Remembers webhook event ids for 3 days (bounded), independently of the display log, so a
+ * redelivery is recognized even after the event has scrolled out of the 200-entry log.
+ * In memory: a restart forgets the ids.
+ */
+export class WebhookDedup {
+  private readonly ids: TtlMap<string, true>;
+
+  constructor(options: { ttlMs?: number; max?: number; now?: () => number } = {}) {
+    this.ids = new TtlMap({ ttlMs: options.ttlMs ?? WEBHOOK_DEDUP_TTL_MS, max: options.max ?? WEBHOOK_DEDUP_MAX, ...(options.now ? { now: options.now } : {}) });
+  }
+
+  seen(id: string): boolean {
+    return this.ids.has(id);
+  }
+
+  remember(id: string): void {
+    this.ids.set(id, true);
+  }
+}
+
 /**
  * In-memory, bounded log of verified webhook events (no database by design).
- * Duplicate deliveries (same event id) are stored once.
+ * Duplicate deliveries (same event id, within 3 days) are stored once.
  */
 export class EventLog {
   private readonly events: LoggedEvent[] = [];
-  private readonly seen = new Set<string>();
 
   constructor(
     private readonly max = 200,
     private readonly now: () => Date = () => new Date(),
+    readonly dedup: WebhookDedup = new WebhookDedup({ now: () => now().getTime() }),
   ) {}
 
+  /** True when this event id was recorded within the dedup window. */
+  hasSeen(id: string): boolean {
+    return this.dedup.seen(id);
+  }
+
   record(event: PayPalWebhookEvent): LoggedEvent | undefined {
-    if (this.seen.has(event.id)) return undefined;
+    if (typeof event.id !== "string" || !event.id) return undefined;
+    if (this.dedup.seen(event.id)) return undefined;
     const { summary, resourceId } = summarize(event);
     const logged: LoggedEvent = {
       id: event.id,
@@ -96,11 +128,8 @@ export class EventLog {
       ...(resourceId ? { resourceId } : {}),
     };
     this.events.unshift(logged);
-    this.seen.add(event.id);
-    while (this.events.length > this.max) {
-      const dropped = this.events.pop()!;
-      this.seen.delete(dropped.id);
-    }
+    this.dedup.remember(event.id);
+    if (this.events.length > this.max) this.events.length = this.max;
     return logged;
   }
 

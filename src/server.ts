@@ -92,6 +92,7 @@ export function createApp(options: AppOptions = {}): Server {
               const logged = deps.events.record(event);
               if (logged) deps.log(`webhook ${logged.eventType}: ${logged.summary}`);
             },
+            isDuplicate: (id) => deps.events.hasSeen(id),
           },
         );
         return sendJson(res, result.status, result.body);

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { renderTextPdf } from "../src/docs/simple-pdf.js";
-import { EventLog } from "../src/events/log.js";
+import { EventLog, WebhookDedup } from "../src/events/log.js";
+import { TtlMap } from "../src/util/ttl-map.js";
 import { AiLimiter } from "../src/limits/rate-limit.js";
 import { createPayPalExecutor, payerLinkOf } from "../src/proposals/actions.js";
 import { ProposalError, ProposalStore } from "../src/proposals/store.js";
@@ -175,6 +176,48 @@ describe("EventLog", () => {
     const log = new EventLog(2);
     for (const id of ["a", "b", "c"]) log.record({ id, event_type: "PAYMENT.CAPTURE.COMPLETED" });
     expect(log.list().map((e) => e.id)).toEqual(["c", "b"]);
+  });
+
+  it("keeps de-duplicating after an event scrolled out of the display log, for 3 days", () => {
+    let now = Date.parse("2026-11-01T00:00:00Z");
+    const log = new EventLog(2, () => new Date(now));
+    log.record({ id: "E1", event_type: "PAYMENT.CAPTURE.COMPLETED" });
+    for (let i = 0; i < 250; i++) log.record({ id: `other-${i}`, event_type: "PAYMENT.CAPTURE.COMPLETED" });
+    expect(log.list().map((e) => e.id)).not.toContain("E1");
+    expect(log.record({ id: "E1", event_type: "PAYMENT.CAPTURE.COMPLETED" })).toBeUndefined();
+    expect(log.hasSeen("E1")).toBe(true);
+    now += 3 * 86_400_000 + 1;
+    expect(log.hasSeen("E1")).toBe(false);
+    expect(log.record({ id: "E1", event_type: "PAYMENT.CAPTURE.COMPLETED" })?.id).toBe("E1");
+  });
+
+  it("ignores events without an id", () => {
+    const log = new EventLog(10);
+    expect(log.record({ id: "", event_type: "PAYMENT.CAPTURE.COMPLETED" })).toBeUndefined();
+    expect(log.record({ event_type: "PAYMENT.CAPTURE.COMPLETED" } as never)).toBeUndefined();
+    expect(log.list()).toEqual([]);
+  });
+
+  it("the dedup cache is bounded", () => {
+    const dedup = new WebhookDedup({ max: 3 });
+    for (const id of ["a", "b", "c", "d"]) dedup.remember(id);
+    expect(["a", "b", "c", "d"].map((id) => dedup.seen(id))).toEqual([false, true, true, true]);
+  });
+});
+
+describe("TtlMap", () => {
+  it("expires entries and stays within its maximum size", () => {
+    let now = 0;
+    const m = new TtlMap<string, number>({ ttlMs: 100, max: 2, now: () => now });
+    m.set("a", 1);
+    m.set("b", 2);
+    m.set("c", 3);
+    expect([m.get("a"), m.get("b"), m.get("c"), m.size]).toEqual([undefined, 2, 3, 2]);
+    now = 101;
+    expect(m.get("b")).toBeUndefined();
+    m.set("d", 4, 1000);
+    now = 500;
+    expect(m.get("d")).toBe(4);
   });
 });
 

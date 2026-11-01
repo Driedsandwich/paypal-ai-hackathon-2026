@@ -80,6 +80,32 @@ describe("handlePayPalWebhook", () => {
     expect(verifyCalls).toBe(0);
   });
 
+  it("rejects events without an id before calling PayPal", async () => {
+    let verifyCalls = 0;
+    const deps = { webhookId: "W", verify: async () => (verifyCalls++, true) };
+    const { id: _id, ...noId } = EVENT;
+    for (const body of [noId, { ...EVENT, id: "" }, { ...EVENT, id: 42 }, { ...EVENT, id: "bad id with spaces" }]) {
+      const res = await handlePayPalWebhook({ headers: HEADERS, rawBody: JSON.stringify(body) }, deps);
+      expect(res).toEqual({ status: 400, body: { ok: false, error: "event id missing or invalid" } });
+    }
+    expect(verifyCalls).toBe(0);
+  });
+
+  it("answers a known redelivery with 200 without verifying again", async () => {
+    let verifyCalls = 0;
+    const handled: string[] = [];
+    const seen = new Set<string>();
+    const deps = {
+      webhookId: "W",
+      verify: async () => (verifyCalls++, true),
+      onEvent: (e: PayPalWebhookEvent) => void (handled.push(e.id), seen.add(e.id)),
+      isDuplicate: (id: string) => seen.has(id),
+    };
+    for (let i = 0; i < 3; i++) expect((await handlePayPalWebhook({ headers: HEADERS, rawBody: JSON.stringify(EVENT) }, deps)).status).toBe(200);
+    expect(verifyCalls).toBe(1);
+    expect(handled).toEqual(["WH-TEST-EVENT-1"]);
+  });
+
   it("returns 500 when no webhook ID is configured", async () => {
     const res = await handlePayPalWebhook({ headers: HEADERS, rawBody: "{}" }, { webhookId: undefined, verify: async () => true });
     expect(res.status).toBe(500);
@@ -125,6 +151,18 @@ describe("HTTP server", () => {
     const spa = await fetch(`${base}/some/view`); // non-API paths fall back to the UI
     expect(spa.status).toBe(200);
     expect(spa.headers.get("content-type")).toMatch(/text\/html/);
+  });
+
+  it("records a redelivered event once and does not verify it again", async () => {
+    const { client, calls } = paypalWithVerification("SUCCESS");
+    const server = createApp({ paypalConfig: FAKE_CONFIG, paypal: client });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    close = () => new Promise((resolve) => server.close(() => resolve()));
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    for (let i = 0; i < 2; i++) expect((await fetch(`${base}/webhooks/paypal`, { method: "POST", headers: HEADERS, body: JSON.stringify(EVENT) })).status).toBe(200);
+    expect(calls.filter((c) => c.url.endsWith("/verify-webhook-signature"))).toHaveLength(1);
+    const events = (await (await fetch(`${base}/api/events`)).json()) as { data: unknown[] };
+    expect(events.data).toHaveLength(1);
   });
 
   it("returns 400 from the webhook route when verification fails", async () => {
