@@ -56,8 +56,13 @@ export interface Proposal<P = unknown> {
   kind: ProposalKind;
   /** One line for the seller, e.g. "Send invoice for USD 80.00 to the buyer". */
   title: string;
-  /** Exactly what will be sent to PayPal on approval. Frozen. */
+  /** Exactly what will be sent to PayPal on approval (recipients by alias). Frozen. */
   payload: P;
+  /**
+   * AI-written text for the seller to copy into a DM to the buyer. Never sent to PayPal
+   * (PayPal ignores custom reminder text and uses its own).
+   */
+  copyForDm?: string;
   status: ProposalStatus;
   createdAt: string;
   decidedAt?: string;
@@ -86,6 +91,8 @@ export type Executor = (kind: ProposalKind, payload: unknown, ctx: ExecutionCont
 export interface ProposeOptions {
   /** Session id of the visitor the proposal belongs to. */
   owner: string;
+  /** Text for the seller to copy into a DM (not sent to PayPal). */
+  copyForDm?: string;
 }
 
 function deepFreeze<T>(value: T): T {
@@ -121,6 +128,7 @@ export class ProposalStore {
       kind,
       title,
       payload: deepFreeze(structuredClone(payload)),
+      ...(opts.copyForDm ? { copyForDm: opts.copyForDm } : {}),
       status: "pending",
       createdAt: now.toISOString(),
     };

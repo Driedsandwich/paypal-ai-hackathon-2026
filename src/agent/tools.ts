@@ -4,10 +4,11 @@ import { carrierFor } from "../paypal/carriers.js";
 import type { PayPalClient } from "../paypal/client.js";
 import type { Invoice } from "../paypal/types.js";
 import type { DemoBuyers } from "../demo/buyers.js";
+import type { ReminderLedger } from "../proposals/reminder-ledger.js";
 import type { ProposalKind, ProposalStore } from "../proposals/store.js";
 import { showMoney } from "../money.js";
 import { SellerMoneySchema } from "./schemas.js";
-import { buildInvoicePayload, buildOrderPayload, type AgentConfig } from "./tasks.js";
+import { buildInvoicePayload, buildOrderPayload, standardReminderPayload, type AgentConfig } from "./tasks.js";
 
 // Agent tools for the free-chat entry point. @paypal/agent-toolkit's AI SDK adapter
 // does not work with the installed AI SDK (see docs/DECISIONS.md), so these are our
@@ -24,6 +25,8 @@ export interface ToolDeps {
   sessionId: string;
   /** Recipients by alias (DEMO_BUYER_EMAILS). The model only ever sees aliases. */
   buyers: DemoBuyers;
+  /** At most 2 reminders per invoice per day. */
+  reminders?: ReminderLedger;
 }
 
 const NOT_CONFIGURED = { error: "PayPal is not configured on this server (set PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET)." };
@@ -52,7 +55,10 @@ function pending(p: { id: string; title: string }) {
 export function agentTools(deps: ToolDeps): AiToolSpec[] {
   const { paypal } = deps;
   const read = async <T>(fn: (pp: PayPalClient) => Promise<T>) => (paypal ? fn(paypal) : NOT_CONFIGURED);
-  const proposals = { propose: <P>(kind: ProposalKind, title: string, payload: P) => deps.proposals.propose(kind, title, payload, { owner: deps.sessionId }) };
+  const proposals = {
+    propose: <P>(kind: ProposalKind, title: string, payload: P, copyForDm?: string) =>
+      deps.proposals.propose(kind, title, payload, { owner: deps.sessionId, ...(copyForDm ? { copyForDm } : {}) }),
+  };
 
   const tools: AiToolSpec[] = [
     tool("list_invoices", "List the seller's recent PayPal invoices with status and amounts.", z.object({ page: z.number().int().min(1).max(100).optional(), page_size: z.number().int().min(1).max(50).optional() }), (i) =>
@@ -82,8 +88,14 @@ export function agentTools(deps: ToolDeps): AiToolSpec[] {
         return { id: o.id, status: o.status, captures: o.purchase_units?.flatMap((u) => u.payments?.captures ?? []).map((c) => ({ id: c.id, status: c.status })) };
       }),
     ),
-    tool("send_invoice_reminder", "Propose a reminder for an unpaid invoice. The seller must approve before it is sent.", z.object({ invoice_id: z.string().min(1).max(30), subject: z.string().min(3).max(200), note: z.string().min(10).max(1000) }), async (i) =>
-      pending(proposals.propose("send_invoice_reminder", `Send reminder for invoice ${i.invoice_id}`, { invoiceId: i.invoice_id, notification: { subject: i.subject, note: i.note, send_to_recipient: true, send_to_invoicer: true } })),
+    tool(
+      "send_invoice_reminder",
+      "Propose sending PayPal's standard reminder email for an unpaid invoice (PayPal uses its own text; custom text is not sent; at most 2 per invoice per day). Optionally add a short friendly message the seller can copy into a DM to the buyer. The seller must approve.",
+      z.object({ invoice_id: z.string().min(1).max(30), dm_message: z.string().min(10).max(1000).optional() }),
+      async (i) => {
+        if (deps.reminders && deps.reminders.remaining(i.invoice_id) <= 0) return { error: "This invoice already had 2 reminders today (PayPal's daily limit). Try again tomorrow." };
+        return pending(proposals.propose("send_invoice_reminder", `Send PayPal's standard reminder for invoice ${i.invoice_id}`, standardReminderPayload(i.invoice_id), i.dm_message));
+      },
     ),
     tool(
       "create_shipment_tracking",
@@ -128,8 +140,7 @@ export function agentTools(deps: ToolDeps): AiToolSpec[] {
     description: z.string().max(1000).optional(),
     price: SellerMoneySchema,
     quantity: z.number().int().min(1).max(999).optional(),
-    subject: z.string().min(3).max(200),
-    note: z.string().min(10).max(1000),
+    note: z.string().min(10).max(1000).describe("Friendly note to the buyer (invoice note, or a DM text for payment links)"),
   });
   if (deps.paymentPath === "invoice") {
     tools.push(
@@ -138,7 +149,7 @@ export function agentTools(deps: ToolDeps): AiToolSpec[] {
         const buyer = deps.buyers.resolve(i.buyer);
         if (!buyer) return unknownBuyer;
         const listing = { title: i.item_title, description: i.description ?? "", price: i.price, quantity: i.quantity ?? 1 };
-        const payload = buildInvoicePayload(listing, buyer.alias, { subject: i.subject, note: i.note }, deps.agentConfig.sellerBusinessName);
+        const payload = buildInvoicePayload(listing, buyer.alias, { note: i.note }, deps.agentConfig.sellerBusinessName);
         return pending(proposals.propose("create_and_send_invoice", `Send invoice for ${showMoney(i.price)} to ${buyer.alias}: ${i.item_title}`, payload));
       }),
     );
@@ -149,7 +160,7 @@ export function agentTools(deps: ToolDeps): AiToolSpec[] {
         const buyer = deps.buyers.resolve(i.buyer);
         if (!buyer) return unknownBuyer;
         const listing = { title: i.item_title, description: i.description ?? "", price: i.price, quantity: i.quantity ?? 1 };
-        return pending(proposals.propose("create_payment_link", `Create payment link for ${showMoney(i.price)} for ${buyer.alias}: ${i.item_title}`, buildOrderPayload(listing, buyer.alias, deps.agentConfig)));
+        return pending(proposals.propose("create_payment_link", `Create payment link for ${showMoney(i.price)} for ${buyer.alias}: ${i.item_title}`, buildOrderPayload(listing, buyer.alias, deps.agentConfig), i.note));
       }),
     );
   }

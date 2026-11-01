@@ -57,7 +57,19 @@ const STATUS_LABEL: Record<Proposal["status"], string> = {
   obsolete: "obsolete",
 };
 
-/** Shows exactly what will be sent to PayPal, with Approve / Reject. The server enforces the gate. */
+/** AI text the seller sends to the buyer by DM (these sellers talk to buyers in social media DMs). */
+export function CopyForDm({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <div className="ai-note">
+      <label>Copy for DM (not sent by PayPal)</label>
+      <textarea readOnly value={text} />
+      <button className="secondary" onClick={() => void navigator.clipboard?.writeText(text).then(() => setCopied(true))}>{copied ? "Copied" : "Copy"}</button>
+    </div>
+  );
+}
+
+/** Shows what will be sent to PayPal, with Approve / Reject. The server enforces the gate. */
 export function ProposalCard({ proposal, onChange, children }: { proposal: Proposal; onChange?: (p: Proposal) => void; children?: ReactNode }) {
   const [p, setP] = useState(proposal);
   const act = useAction(async (verb: "approve" | "reject") => {
@@ -72,6 +84,7 @@ export function ProposalCard({ proposal, onChange, children }: { proposal: Propo
         <span className={`badge ${STATUS_CLASS[p.status]}`}>{STATUS_LABEL[p.status]}</span>
       </div>
       {children}
+      {p.copy_for_dm && <CopyForDm text={p.copy_for_dm} />}
       <details open={p.status === "pending"}>
         <summary className="muted">Payload sent to PayPal on approval ({p.kind}; buyers shown by demo alias)</summary>
         <pre>{JSON.stringify(p.payload, (k, v) => (k === "base64" && typeof v === "string" ? `${v.slice(0, 24)}… (${v.length} chars)` : v), 2)}</pre>

@@ -38,6 +38,7 @@ export function publicProposal(p: Proposal, buyers?: DemoBuyers) {
     createdAt: p.createdAt,
     ...(p.decidedAt ? { decidedAt: p.decidedAt } : {}),
     payload: aliasEmails(p.payload, buyers),
+    ...(p.copyForDm ? { copy_for_dm: aliasEmails(p.copyForDm, buyers) } : {}),
     ...(p.result !== undefined ? { result: aliasEmails(p.result, buyers) } : {}),
     ...(p.error !== undefined ? { error: aliasEmails(p.error, buyers) } : {}),
   };

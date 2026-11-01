@@ -6,6 +6,7 @@ import { AiLimiter } from "../src/limits/rate-limit.js";
 import { DemoBuyers } from "../src/demo/buyers.js";
 import { createPayPalExecutor, payerLinkOf } from "../src/proposals/actions.js";
 import { OrderRegistry } from "../src/proposals/order-registry.js";
+import { ReminderLedger } from "../src/proposals/reminder-ledger.js";
 import { ProposalError, ProposalPolicyError, ProposalStore } from "../src/proposals/store.js";
 import { fakeEmail } from "./helpers/fake-fetch.js";
 
@@ -182,6 +183,41 @@ describe("execution allowlist (F1)", () => {
     expect(() => store.reject(p.id, "someone-else")).toThrow(ProposalError);
     expect(store.get(p.id, ME.owner)?.status).toBe("pending");
     expect(() => store.propose("capture_order", "x", {}, { owner: "" })).toThrow(/owner/);
+  });
+});
+
+describe("standard reminders (F10)", () => {
+  it("the ledger allows 2 reminders per invoice per UTC day", () => {
+    let now = Date.parse("2026-11-01T10:00:00Z");
+    const ledger = new ReminderLedger(2, () => now);
+    expect([ledger.reserve("INV2-A"), ledger.reserve("INV2-A"), ledger.reserve("INV2-A")]).toEqual([true, true, false]);
+    expect(ledger.remaining("INV2-B")).toBe(2);
+    ledger.release("INV2-A");
+    expect(ledger.remaining("INV2-A")).toBe(1);
+    now = Date.parse("2026-11-02T00:00:01Z");
+    expect(ledger.remaining("INV2-A")).toBe(2);
+  });
+
+  it("sends only the flags, and a third reminder the same day becomes obsolete without calling PayPal", async () => {
+    const { client, apiCalls } = paypalWith((c) => (c.url.endsWith("/remind") ? { status: 204 } : undefined));
+    const reminders = new ReminderLedger();
+    const store = new ProposalStore(createPayPalExecutor(() => client, { buyers: BUYERS, reminders }));
+    const payload = { invoiceId: "INV2-A", notification: { send_to_recipient: true, send_to_invoicer: true } };
+    const runs = [];
+    for (let i = 0; i < 3; i++) runs.push(await store.approve(store.propose("send_invoice_reminder", "Send PayPal's standard reminder", payload, ME).id, ME.owner));
+    expect(runs.map((r) => r.status)).toEqual(["executed", "executed", "obsolete"]);
+    expect((runs[2]!.error as { message: string }).message).toMatch(/at most 2 reminders per invoice per day/);
+    expect(apiCalls()).toHaveLength(2);
+    expect(JSON.parse(apiCalls()[0]!.body!)).toEqual({ send_to_recipient: true, send_to_invoicer: true });
+  });
+
+  it("a reminder PayPal refuses does not use up the daily allowance", async () => {
+    const { client } = paypalWith(() => ({ status: 422, json: { name: "UNPROCESSABLE_ENTITY", debug_id: "dbg" } }));
+    const reminders = new ReminderLedger();
+    const store = new ProposalStore(createPayPalExecutor(() => client, { buyers: BUYERS, reminders }));
+    const p = await store.approve(store.propose("send_invoice_reminder", "r", { invoiceId: "INV2-A", notification: { send_to_recipient: true } }, ME).id, ME.owner);
+    expect(p.status).toBe("failed");
+    expect(reminders.remaining("INV2-A")).toBe(2);
   });
 });
 

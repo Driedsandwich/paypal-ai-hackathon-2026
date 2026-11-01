@@ -72,12 +72,13 @@ describe("Invoicing v2: send, remind, get, list, next number", () => {
         ? { json: { href: "https://www.sandbox.paypal.com/invoice/p/#INV2-1", rel: "payer-view", method: "GET" } }
         : undefined,
     );
-    const link = await client.sendInvoice("INV2-1", { send_to_recipient: true, send_to_invoicer: true, subject: "Your invoice" });
+    // A subject is dropped: PayPal does not honor custom text on send.
+    const link = await client.sendInvoice("INV2-1", { send_to_recipient: true, send_to_invoicer: true, subject: "Your invoice" } as never);
     expect(link?.rel).toBe("payer-view");
     const call = apiCalls()[0]!;
     expect(call.method).toBe("POST");
     expect(call.headers["PayPal-Request-Id"]).toMatch(UUID_RE);
-    expect(JSON.parse(call.body!)).toEqual({ send_to_recipient: true, send_to_invoicer: true, subject: "Your invoice" });
+    expect(JSON.parse(call.body!)).toEqual({ send_to_recipient: true, send_to_invoicer: true });
   });
 
   it("handles 202 Accepted from send", async () => {
@@ -85,15 +86,16 @@ describe("Invoicing v2: send, remind, get, list, next number", () => {
     await expect(client.sendInvoice("INV2-1")).resolves.toMatchObject({ rel: "self" });
   });
 
-  it("reminds (204 No Content) with a fresh request id", async () => {
+  it("reminds (204 No Content) with a fresh request id and only the send flags", async () => {
     const { client, apiCalls } = paypalWith((c) =>
       c.url === `${SANDBOX}/v2/invoicing/invoices/INV2-1/remind` ? { status: 204 } : undefined,
     );
-    await expect(client.remindInvoice("INV2-1", { subject: "Friendly reminder", note: "Hi!" })).resolves.toBeUndefined();
+    // PayPal: user-provided subject/note "will not be honored", so they are never sent.
+    await expect(client.remindInvoice("INV2-1", { subject: "Friendly reminder", note: "Hi!", send_to_recipient: true } as never)).resolves.toBeUndefined();
     const call = apiCalls()[0]!;
     expect(call.method).toBe("POST");
     expect(call.headers["PayPal-Request-Id"]).toMatch(UUID_RE);
-    expect(JSON.parse(call.body!)).toEqual({ subject: "Friendly reminder", note: "Hi!" });
+    expect(JSON.parse(call.body!)).toEqual({ send_to_recipient: true });
   });
 
   it("surfaces remind errors with debug_id", async () => {

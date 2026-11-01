@@ -17,6 +17,7 @@ import type { Invoice } from "../paypal/types.js";
 import type { SeedDemoDataPayload } from "../proposals/actions.js";
 import { buildInvoicePayload, buildOrderPayload } from "../agent/tasks.js";
 import type { OrderRegistry } from "../proposals/order-registry.js";
+import type { ReminderLedger } from "../proposals/reminder-ledger.js";
 import { PROPOSAL_STATUSES, type Proposal, type ProposalKind, type ProposalStatus, type ProposalStore } from "../proposals/store.js";
 import { clientAddress, limitKey } from "./client-address.js";
 import { disputeDetail, disputeRow, invoiceDetail, invoiceRow, orderView, publicPack, publicProposal as toPublic } from "./dto.js";
@@ -36,6 +37,8 @@ export interface ApiDeps {
   buyers: DemoBuyers;
   /** Orders v2 ids created by this server, with the session that created them. */
   orders: OrderRegistry;
+  /** At most 2 reminders per invoice per day. */
+  reminders: ReminderLedger;
 }
 
 /** Shown in the UI header: what a visitor can and cannot do on the public demo. */
@@ -65,8 +68,8 @@ function publicProposal(ctx: Ctx, p: Proposal) {
 }
 
 /** Creates a proposal owned by the caller's session. */
-function propose<P>(ctx: Ctx, kind: ProposalKind, title: string, payload: P): Proposal<P> {
-  return ctx.deps.proposals.propose(kind, title, payload, { owner: ctx.session });
+function propose<P>(ctx: Ctx, kind: ProposalKind, title: string, payload: P, copyForDm?: string): Proposal<P> {
+  return ctx.deps.proposals.propose(kind, title, payload, { owner: ctx.session, ...(copyForDm ? { copyForDm } : {}) });
 }
 
 /** Resolves a buyer alias, or explains which aliases exist. */
@@ -184,7 +187,7 @@ const ROUTES: Route[] = [
       const alias = requireBuyer(deps, body.buyer?.alias);
       if (deps.settings.paymentPath === "order") {
         const prepared = await deps.agent.preparePaymentLink(body.listing, { alias });
-        const proposal = propose(ctx, "create_payment_link", `Create payment link for ${showMoney(body.listing.price)} for ${alias}: ${body.listing.title}`, prepared.payload);
+        const proposal = propose(ctx, "create_payment_link", `Create payment link for ${showMoney(body.listing.price)} for ${alias}: ${body.listing.title}`, prepared.payload, prepared.buyer_message.note);
         return ok(res, { path: "order", proposal: publicProposal(ctx, proposal), buyer_message: prepared.buyer_message, generated_by: prepared.generated_by });
       }
       const prepared = await deps.agent.prepareInvoice(body.listing, { alias });
@@ -201,7 +204,7 @@ const ROUTES: Route[] = [
       const body = PrepareSchema.parse(await readJsonBody(req, MAX_API_BODY));
       const alias = requireBuyer(deps, body.buyer?.alias);
       const prepared = await deps.agent.preparePaymentLink(body.listing, { alias });
-      const proposal = propose(ctx, "create_payment_link", `Create payment link for ${showMoney(body.listing.price)} for ${alias}: ${body.listing.title}`, prepared.payload);
+      const proposal = propose(ctx, "create_payment_link", `Create payment link for ${showMoney(body.listing.price)} for ${alias}: ${body.listing.title}`, prepared.payload, prepared.buyer_message.note);
       ok(res, { path: "order", proposal: publicProposal(ctx, proposal), buyer_message: prepared.buyer_message, generated_by: prepared.generated_by });
     },
   },
@@ -224,8 +227,11 @@ const ROUTES: Route[] = [
       const list = await requirePayPal(deps).listInvoices({ page: 1, page_size: 50 });
       const wanted = body.invoice_ids ? new Set(body.invoice_ids) : undefined;
       const now = Date.now();
-      const unpaid: UnpaidInvoice[] = (list.items ?? [])
-        .filter((inv) => inv.status && UNPAID.has(inv.status) && (!wanted || wanted.has(inv.id)))
+      const candidates = (list.items ?? []).filter((inv) => inv.status && UNPAID.has(inv.status) && (!wanted || wanted.has(inv.id)));
+      // PayPal allows 2 reminders per invoice per day: skip invoices that already had them.
+      const skipped = candidates.filter((inv) => deps.reminders.remaining(inv.id) <= 0).map((inv) => ({ invoice_id: inv.id, reason: "already reminded twice today (PayPal's daily limit)" }));
+      const unpaid: UnpaidInvoice[] = candidates
+        .filter((inv) => deps.reminders.remaining(inv.id) > 0)
         .slice(0, 20)
         .map((inv) => ({
           invoice_id: inv.id,
@@ -237,8 +243,11 @@ const ROUTES: Route[] = [
           item_names: (inv.items ?? []).map((i) => i.name).slice(0, 20),
         }));
       const { reminders, generated_by } = await deps.agent.nudgeUnpaid(unpaid);
-      const proposals = reminders.map((r) => propose(ctx, "send_invoice_reminder", `Send reminder for invoice ${r.invoice_id}`, r.payload));
-      ok(res, { unpaid_count: unpaid.length, proposals: proposals.map((p) => publicProposal(ctx, p)), generated_by });
+      const numbers = new Map(unpaid.map((u) => [u.invoice_id, u.invoice_number]));
+      const proposals = reminders.map((r) =>
+        propose(ctx, "send_invoice_reminder", `Send PayPal's standard reminder for invoice ${numbers.get(r.invoice_id) ?? r.invoice_id}`, r.payload, r.copy_for_dm),
+      );
+      ok(res, { unpaid_count: unpaid.length, proposals: proposals.map((p) => publicProposal(ctx, p)), skipped, generated_by });
     },
   },
   {
@@ -416,7 +425,7 @@ const ROUTES: Route[] = [
       if (s.paymentPath === "invoice") {
         payload = {
           invoices: listings.map((l, i) =>
-            buildInvoicePayload(l, deps.buyers.at(i).alias, { subject: `Invoice: ${l.title}`, note: `Demo invoice for "${l.title}". Pay securely with PayPal (sandbox).` }, s.sellerBusinessName),
+            buildInvoicePayload(l, deps.buyers.at(i).alias, { note: `Demo invoice for "${l.title}". Pay securely with PayPal (sandbox).` }, s.sellerBusinessName),
           ),
         };
       } else {
@@ -442,6 +451,7 @@ const ROUTES: Route[] = [
           paymentPath: deps.settings.paymentPath,
           sessionId: session,
           buyers: deps.buyers,
+          reminders: deps.reminders,
         },
         body.messages,
         deps.settings.aiMaxOutputTokens,

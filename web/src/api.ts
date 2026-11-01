@@ -51,6 +51,8 @@ export interface Proposal {
   kind: string;
   title: string;
   payload: unknown;
+  /** AI-written text for the seller to send by DM; never sent to PayPal. */
+  copy_for_dm?: string;
   status: "pending" | "executing" | "executed" | "failed" | "rejected" | "unknown" | "obsolete";
   createdAt: string;
   result?: unknown;

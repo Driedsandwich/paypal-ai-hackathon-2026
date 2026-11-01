@@ -14,6 +14,7 @@ import { AiLimiter } from "./limits/rate-limit.js";
 import { PayPalApiError, PayPalClient, PayPalTimeoutError, handlePayPalWebhook, type PayPalConfig } from "./paypal/index.js";
 import { createPayPalExecutor } from "./proposals/actions.js";
 import { OrderRegistry } from "./proposals/order-registry.js";
+import { ReminderLedger } from "./proposals/reminder-ledger.js";
 import { DemoBuyers } from "./demo/buyers.js";
 import { ProposalObsoleteError, ProposalPolicyError, ProposalStore } from "./proposals/store.js";
 import { MoneyError } from "./money.js";
@@ -60,6 +61,7 @@ export function buildDeps(options: AppOptions = {}): ApiDeps & { log: (msg: stri
   const log = options.log ?? (() => {});
   const buyers = new DemoBuyers(settings.demoBuyerEmails);
   const orders = options.orders ?? new OrderRegistry();
+  const reminders = new ReminderLedger();
   const proposals =
     options.proposals ??
     new ProposalStore(
@@ -68,7 +70,7 @@ export function buildDeps(options: AppOptions = {}): ApiDeps & { log: (msg: stri
           if (!paypal) throw new Error("PayPal is not configured");
           return paypal;
         },
-        { buyers, orders },
+        { buyers, orders, reminders },
       ),
       { describeError: (err) => describeExecutionError(err, log), isUnknownOutcome: (err) => err instanceof PayPalTimeoutError && err.write },
     );
@@ -90,6 +92,7 @@ export function buildDeps(options: AppOptions = {}): ApiDeps & { log: (msg: stri
       new AiLimiter({ perIpMax: settings.aiRateLimitPerIp, windowMs: settings.aiRateLimitWindowMinutes * 60_000, dailyCap: settings.aiDailyCap }),
     buyers,
     orders,
+    reminders,
     log,
     staticDir: options.staticDir,
   };

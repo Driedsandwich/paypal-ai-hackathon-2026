@@ -17,7 +17,7 @@ interface Row {
 
 export function InvoicesView({ health, onProposal }: { health: Health; onProposal: () => void }) {
   const [rows, setRows] = useState<Row[] | null>(null);
-  const [nudges, setNudges] = useState<{ proposals: Proposal[]; generated_by?: { provider: string; model?: string } } | null>(null);
+  const [nudges, setNudges] = useState<{ proposals: Proposal[]; skipped?: Array<{ invoice_id: string; reason: string }>; generated_by?: { provider: string; model?: string } } | null>(null);
   const [seed, setSeed] = useState<Proposal | null>(null);
   const load = useAction(async () => setRows((await api.get<{ invoices: Row[] }>("/api/invoices")).invoices));
   const nudge = useAction(async () => {
@@ -48,7 +48,7 @@ export function InvoicesView({ health, onProposal }: { health: Health; onProposa
     <section className="card">
       <h2>Invoices (live from the PayPal sandbox)</h2>
       <button className="secondary" disabled={load.busy} onClick={() => void load.run()}>Refresh</button>
-      <button className="primary" disabled={nudge.busy} onClick={() => void nudge.run()}>{nudge.busy ? "Drafting…" : "Draft reminders for unpaid invoices (AI)"}</button>
+      <button className="primary" disabled={nudge.busy} onClick={() => void nudge.run()}>{nudge.busy ? "Drafting…" : "Prepare reminders for unpaid invoices (AI DM text)"}</button>
       <button className="secondary" disabled={seeder.busy} onClick={() => void seeder.run()} title="Creates sample invoices to the sandbox buyers in DEMO_BUYER_EMAILS, after your approval">Seed demo data…</button>
       <ErrorBox error={load.error ?? nudge.error ?? seeder.error} />
       {seed && <ProposalCard proposal={seed} onChange={() => { onProposal(); void load.run(); }} />}
@@ -73,8 +73,10 @@ export function InvoicesView({ health, onProposal }: { health: Health; onProposa
       )}
       {nudges && (
         <>
-          <h3>Reminder drafts <AiBadge by={nudges.generated_by} /></h3>
-          {nudges.proposals.length === 0 && <p className="muted">No unpaid invoices.</p>}
+          <h3>Reminders <AiBadge by={nudges.generated_by} /></h3>
+          <p className="muted">Approving sends PayPal's standard reminder email (PayPal uses its own text, at most 2 per invoice per day). The AI text is for you to send by DM.</p>
+          {nudges.proposals.length === 0 && <p className="muted">No unpaid invoices to remind.</p>}
+          {nudges.skipped?.map((s) => <p key={s.invoice_id} className="muted">Skipped {s.invoice_id}: {s.reason}</p>)}
           {nudges.proposals.map((p) => <ProposalCard key={p.id} proposal={p} onChange={onProposal} />)}
         </>
       )}

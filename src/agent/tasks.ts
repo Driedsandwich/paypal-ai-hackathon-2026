@@ -52,13 +52,17 @@ export interface Listing extends ListingAi {
 
 export interface PreparedBilling<P> {
   payload: P;
-  buyer_message: { subject: string; note: string };
+  /** Invoice path: the invoice note (shown to the buyer by PayPal). Order path: a DM text. */
+  buyer_message: { note: string };
   generated_by: GeneratedBy;
 }
 
 export interface PreparedReminder {
   invoice_id: string;
+  /** PayPal's standard reminder (flags only). */
   payload: SendReminderPayload;
+  /** AI-written friendly text for the seller to send by DM. Not sent to PayPal. */
+  copy_for_dm: string;
 }
 
 export interface EvidencePack extends EvidencePackAi {
@@ -81,12 +85,13 @@ Rules:
 - hs_code_candidate: a 6-digit Harmonized System code candidate written like 6912.00, or "" if unsure. It is only a hint; the seller will verify it.
 - Do not output prices; the app calculates them.`;
 
-const BILLING_SYSTEM = `You write the short message a small Japanese seller sends with a PayPal payment request to an overseas buyer.
+const BILLING_SYSTEM = `You write the short note a small Japanese seller includes with a PayPal payment request to an overseas buyer.
 Write friendly, clear English. Mention the item and that payment is handled securely by PayPal.
 Do not invent shipping dates, discounts, tracking numbers or promises. Max 1000 characters for note.`;
 
-const NUDGE_SYSTEM = `You write polite payment reminders for unpaid PayPal invoices from a small Japanese seller to overseas buyers.
-One reminder per input invoice, using the same invoice_id. Be friendly and brief; never threaten, never add fees or deadlines that are not in the input.`;
+const NUDGE_SYSTEM = `You write short, friendly payment reminder messages that a small Japanese seller sends to overseas buyers by social media direct message (DM).
+PayPal separately sends its own standard reminder email, so the DM can say that the buyer may also get a reminder from PayPal.
+One message per input invoice, using the same invoice_id. Be friendly and brief; never threaten, never add fees or deadlines that are not in the input.`;
 
 const EVIDENCE_SYSTEM = `You help a small Japanese seller answer a PayPal dispute in English.
 Use ONLY facts present in the input (dispute, invoice, tracking, messages, seller_notes). Never invent dates, amounts, tracking numbers, delivery status or conversations.
@@ -172,10 +177,7 @@ export class Agent {
     for (const r of value.reminders) {
       if (!known.has(r.invoice_id) || seen.has(r.invoice_id)) continue;
       seen.add(r.invoice_id);
-      reminders.push({
-        invoice_id: r.invoice_id,
-        payload: { invoiceId: r.invoice_id, notification: { subject: r.subject, note: r.note, send_to_recipient: true, send_to_invoicer: true } },
-      });
+      reminders.push({ invoice_id: r.invoice_id, payload: standardReminderPayload(r.invoice_id), copy_for_dm: r.message });
     }
     return { reminders, generated_by: { provider, ...(model ? { model } : {}) } };
   }
@@ -246,6 +248,11 @@ export class Agent {
   }
 }
 
+/** PayPal's standard reminder: PayPal ignores custom subject/note on remind, so only flags are sent. */
+export function standardReminderPayload(invoiceId: string): SendReminderPayload {
+  return { invoiceId, notification: { send_to_recipient: true, send_to_invoicer: true } };
+}
+
 /**
  * Pure builder for the Invoicing v2 draft + send notification (shared by tasks and chat tools).
  * The recipient is a demo alias; the executor adds the email address at execution time.
@@ -253,7 +260,7 @@ export class Agent {
 export function buildInvoicePayload(
   listing: ListingForSale,
   recipientAlias: string,
-  message: { subject: string; note: string },
+  message: { note: string },
   sellerBusinessName?: string,
 ): CreateAndSendInvoicePayload {
   const currency = listing.price.currency_code;
@@ -275,7 +282,9 @@ export function buildInvoicePayload(
       },
     ],
   };
-  return { recipient_alias: recipientAlias, invoice, notification: { subject: message.subject, send_to_recipient: true, send_to_invoicer: true } };
+  // The AI note goes in invoice.detail.note (supported, shown to the buyer). The send
+  // notification carries flags only: PayPal does not honor a custom subject or note there.
+  return { recipient_alias: recipientAlias, invoice, notification: { send_to_recipient: true, send_to_invoicer: true } };
 }
 
 /**

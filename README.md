@@ -35,8 +35,10 @@ PayPal until the seller clicks Approve**, and the server enforces that.
    A proposal card shows the Invoicing v2 payload (the buyer appears by alias) and the
    AI-written message to the buyer. Click **Approve and send**: the app creates the draft
    invoice and sends it through PayPal.
-4. **Invoices:** the grid is read live from the sandbox. *Draft reminders for unpaid invoices*
-   asks the AI for a polite reminder per unpaid invoice; each one is a separate proposal.
+4. **Invoices:** the grid is read live from the sandbox. *Prepare reminders for unpaid
+   invoices* creates one proposal per unpaid invoice to send **PayPal's standard reminder**
+   (PayPal uses its own text; at most 2 per invoice per day). The AI writes a friendly
+   message shown as **Copy for DM**, for the seller to send over social media.
 5. Pay the invoice as the sandbox buyer. If a webhook is configured, `INVOICING.INVOICE.PAID`
    shows up under **Dashboard → PayPal webhook events**.
 6. **Shipments:** enter the invoice id, carrier (for example `Japan Post`) and a tracking
@@ -180,8 +182,10 @@ The agent has four typed tasks and a chat entry point:
 1. **draftListing**: Japanese item → English title, description, item specifics, a plain
    customs description and an HS code candidate (labelled "check before use"). The USD price
    is computed in code from `FX_JPY_PER_USD`, not by the model.
-2. **prepareInvoice**: writes the buyer-facing note; the invoice JSON is built in code.
-3. **nudgeUnpaid**: a friendly reminder per unpaid invoice (only ids that exist are kept).
+2. **prepareInvoice**: writes the buyer-facing note (sent in `invoice.detail.note`); the
+   invoice JSON is built in code. On the payment-link path the note is a DM text.
+3. **nudgeUnpaid**: a friendly DM text per unpaid invoice (only ids that exist are kept). The
+   approved action sends PayPal's standard reminder; PayPal ignores custom reminder text.
 4. **disputeEvidencePack**: summary, timeline, reply draft and evidence notes from PayPal's
    dispute data plus the seller's facts. A fact check flags any date, amount, tracking number
    or id that is not in the inputs. Buyer names and emails are not sent to the model.

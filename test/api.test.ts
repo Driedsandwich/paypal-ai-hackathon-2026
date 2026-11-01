@@ -353,6 +353,39 @@ describe("money validation over HTTP", () => {
   });
 });
 
+describe("reminders (F10)", () => {
+  it("proposes PayPal's standard reminder with a DM copy, and skips invoices reminded twice today", async () => {
+    const pp = sandbox();
+    const { post } = await start({ paypalConfig: FAKE_CONFIG, paypal: pp.client, settings: loadSettings(BUYERS) });
+    const first = await post("/api/invoices/nudge", {});
+    const proposal = first.body.data.proposals[0];
+    expect(proposal).toMatchObject({ title: "Send PayPal's standard reminder for invoice 0001", payload: { invoiceId: "INV2-UNPAID", notification: { send_to_recipient: true, send_to_invoicer: true } } });
+    expect(proposal.copy_for_dm).toMatch(/friendly reminder/i);
+    expect((await post(`/api/proposals/${proposal.id}/approve`)).body.data.status).toBe("executed");
+    const second = (await post("/api/invoices/nudge", {})).body.data.proposals[0];
+    expect((await post(`/api/proposals/${second.id}/approve`)).body.data.status).toBe("executed");
+    const third = await post("/api/invoices/nudge", {});
+    expect(third.body.data.proposals).toEqual([]);
+    expect(third.body.data.skipped).toEqual([{ invoice_id: "INV2-UNPAID", reason: expect.stringMatching(/twice today/) }]);
+    const remindBodies = pp.calls.filter((c) => c.url.endsWith("/remind")).map((c) => JSON.parse(c.body!));
+    expect(remindBodies).toEqual([
+      { send_to_recipient: true, send_to_invoicer: true },
+      { send_to_recipient: true, send_to_invoicer: true },
+    ]);
+  });
+
+  it("a new invoice keeps the AI text in invoice.detail.note, not in the notification subject", async () => {
+    const pp = sandbox();
+    const { post } = await start({ paypalConfig: FAKE_CONFIG, paypal: pp.client, settings: loadSettings(BUYERS) });
+    const p = (await post("/api/invoices/prepare", { listing: LISTING, buyer: { alias: "Demo buyer 1" } })).body.data.proposal;
+    await post(`/api/proposals/${p.id}/approve`);
+    const draft = JSON.parse(pp.calls.find((c) => c.url === `${SANDBOX}/v2/invoicing/invoices` && c.method === "POST")!.body!);
+    expect(draft.detail.note).toMatch(/PayPal/);
+    const send = JSON.parse(pp.calls.find((c) => c.url.endsWith("/send"))!.body!);
+    expect(send).toEqual({ send_to_recipient: true, send_to_invoicer: true });
+  });
+});
+
 describe("public data (F3)", () => {
   const SECRET_NOTE = "private memo";
   /** A sandbox whose records carry contact details the public must not see. */

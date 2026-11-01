@@ -9,8 +9,10 @@ import type {
   PayPalLink,
   ShippingTracker,
 } from "../paypal/types.js";
+import { PayPalApiError } from "../paypal/client.js";
 import type { OrderRegistry } from "./order-registry.js";
-import { ProposalPolicyError, type ExecutionContext, type ProposalKind } from "./store.js";
+import { REMINDERS_PER_INVOICE_PER_DAY, type ReminderLedger } from "./reminder-ledger.js";
+import { ProposalObsoleteError, ProposalPolicyError, type ExecutionContext, type ProposalKind } from "./store.js";
 
 // Payload shapes, one per proposal kind. These are what the seller sees before approving
 // and what is sent to PayPal after approval. Recipients are stored by demo alias
@@ -21,11 +23,13 @@ export interface CreateAndSendInvoicePayload {
   /** A DEMO_BUYER_EMAILS alias; becomes primary_recipients[0].billing_info.email_address. */
   recipient_alias: string;
   invoice: InvoiceDraft;
+  /** Send flags (the client never sends a subject or note; PayPal would ignore them). */
   notification: InvoiceNotification;
 }
+/** PayPal's standard reminder: only the send flags (PayPal ignores custom subject/note). */
 export interface SendReminderPayload {
   invoiceId: string;
-  notification: InvoiceNotification;
+  notification: Pick<InvoiceNotification, "send_to_recipient" | "send_to_invoicer">;
 }
 export interface CreatePaymentLinkPayload {
   /** A DEMO_BUYER_EMAILS alias; becomes payment_source.paypal.email_address (the PayPal account the link is for). */
@@ -89,6 +93,8 @@ export interface ExecutorOptions {
   buyers: DemoBuyers;
   /** Orders created here are registered to the proposal's session (for capture). */
   orders?: OrderRegistry;
+  /** At most 2 reminders per invoice per day. */
+  reminders?: ReminderLedger;
 }
 
 function resolveRecipient(buyers: DemoBuyers, alias: unknown): string {
@@ -153,8 +159,19 @@ export function createPayPalExecutor(getPayPal: () => PayPalClient, opts: Execut
         return createAndSend(paypal, opts.buyers, payload as CreateAndSendInvoicePayload);
       case "send_invoice_reminder": {
         const p = payload as SendReminderPayload;
-        await paypal.remindInvoice(p.invoiceId, p.notification);
-        return { invoiceId: p.invoiceId, reminded: true };
+        if (opts.reminders && !opts.reminders.reserve(p.invoiceId)) {
+          throw new ProposalObsoleteError(
+            `PayPal allows at most ${REMINDERS_PER_INVOICE_PER_DAY} reminders per invoice per day, and invoice ${p.invoiceId} already had them today. Nothing was sent; try again tomorrow.`,
+          );
+        }
+        try {
+          // Flags only: PayPal sends its standard reminder text.
+          await paypal.remindInvoice(p.invoiceId, { send_to_recipient: p.notification.send_to_recipient ?? true, send_to_invoicer: p.notification.send_to_invoicer ?? true });
+        } catch (err) {
+          if (err instanceof PayPalApiError) opts.reminders?.release(p.invoiceId); // PayPal refused: not sent
+          throw err;
+        }
+        return { invoiceId: p.invoiceId, reminded: true, standardReminder: true };
       }
       case "create_payment_link":
         return createLink(paypal, opts, payload as CreatePaymentLinkPayload, ctx);

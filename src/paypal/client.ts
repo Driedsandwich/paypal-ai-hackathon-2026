@@ -10,7 +10,7 @@ import type {
   Invoice,
   InvoiceDraft,
   InvoiceList,
-  InvoiceNotification,
+  InvoiceSendFlags,
   ListDisputesParams,
   ListInvoicesParams,
   OrderResponse,
@@ -284,28 +284,26 @@ export class PayPalClient {
     return { id, href: href! };
   }
 
-  /** POST /v2/invoicing/invoices/{id}/send. Returns PayPal's link (the payer view) when present. */
-  async sendInvoice(
-    invoiceId: string,
-    notification: InvoiceNotification = {},
-    opts: { requestId?: string } = {},
-  ): Promise<PayPalLink | undefined> {
+  /**
+   * POST /v2/invoicing/invoices/{id}/send. Returns PayPal's link (the payer view) when present.
+   * Only the send flags are sent: PayPal does not honor a custom subject or note here.
+   */
+  async sendInvoice(invoiceId: string, flags: InvoiceSendFlags = {}, opts: { requestId?: string } = {}): Promise<PayPalLink | undefined> {
     const body = await this.request<PayPalLink | undefined>(
       "POST",
       `/v2/invoicing/invoices/${seg(invoiceId, "invoiceId")}/send`,
-      { body: notification, requestId: opts.requestId ?? this.newRequestId() },
+      { body: sendFlags(flags), requestId: opts.requestId ?? this.newRequestId() },
     );
     return body && typeof body.href === "string" ? body : undefined;
   }
 
-  /** POST /v2/invoicing/invoices/{id}/remind (204, no body). */
-  async remindInvoice(
-    invoiceId: string,
-    notification: InvoiceNotification = {},
-    opts: { requestId?: string } = {},
-  ): Promise<void> {
+  /**
+   * POST /v2/invoicing/invoices/{id}/remind (204, no body): PayPal's standard reminder.
+   * Only the send flags are sent: PayPal does not honor a custom subject or note here.
+   */
+  async remindInvoice(invoiceId: string, flags: InvoiceSendFlags = {}, opts: { requestId?: string } = {}): Promise<void> {
     await this.request<undefined>("POST", `/v2/invoicing/invoices/${seg(invoiceId, "invoiceId")}/remind`, {
-      body: notification,
+      body: sendFlags(flags),
       requestId: opts.requestId ?? this.newRequestId(),
     });
   }
@@ -432,6 +430,14 @@ export class PayPalClient {
     }
     return parsed as T;
   }
+}
+
+/** Copies only the supported flags (drops subject/note/recipients PayPal would ignore). */
+function sendFlags(flags: InvoiceSendFlags): InvoiceSendFlags {
+  return {
+    ...(flags.send_to_recipient !== undefined ? { send_to_recipient: flags.send_to_recipient } : {}),
+    ...(flags.send_to_invoicer !== undefined ? { send_to_invoicer: flags.send_to_invoicer } : {}),
+  };
 }
 
 function seg(value: string, name: string): string {

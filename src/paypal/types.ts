@@ -118,7 +118,11 @@ export interface InvoiceList {
   links?: PayPalLink[];
 }
 
-/** `notification` (body of /send and /remind). */
+/**
+ * `notification` (body of /send and /remind). PayPal's references for both calls say that
+ * user-provided `subject` and `note` "will not be honored", so the client only sends the flags
+ * (see InvoiceSendFlags); the AI note for a new invoice goes in `invoice.detail.note`.
+ */
 export interface InvoiceNotification {
   subject?: string;
   note?: string;
@@ -126,6 +130,9 @@ export interface InvoiceNotification {
   send_to_recipient?: boolean;
   additional_recipients?: string[];
 }
+
+/** What this app sends to /send and /remind. */
+export type InvoiceSendFlags = Pick<InvoiceNotification, "send_to_recipient" | "send_to_invoicer">;
 
 export interface ListInvoicesParams {
   page?: number;

@@ -113,16 +113,15 @@ export const ListingAiSchema = z.object({
 });
 export type ListingAi = z.infer<typeof ListingAiSchema>;
 
+/** The buyer-facing note: invoice.detail.note on invoices, a DM text for payment links. */
 export const BuyerMessageAiSchema = z.object({
-  subject: z.string().min(3).max(200),
   note: z.string().min(10).max(1000),
 });
 export type BuyerMessageAi = z.infer<typeof BuyerMessageAiSchema>;
 
+/** One friendly DM text per unpaid invoice (for the seller to copy; PayPal's reminder text is fixed). */
 export const NudgeAiSchema = z.object({
-  reminders: z
-    .array(z.object({ invoice_id: z.string().min(1), subject: z.string().min(3).max(200), note: z.string().min(10).max(1000) }))
-    .max(50),
+  reminders: z.array(z.object({ invoice_id: z.string().min(1), message: z.string().min(10).max(1000) })).max(50),
 });
 export type NudgeAi = z.infer<typeof NudgeAiSchema>;
 

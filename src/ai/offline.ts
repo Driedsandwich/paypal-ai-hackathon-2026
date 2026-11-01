@@ -120,7 +120,6 @@ function buyerMessage(input: Record<string, unknown>): FakeReplyValue {
   const item = String(input.item ?? "your item");
   const seller = typeof input.seller === "string" && input.seller ? input.seller : "the seller";
   return json({
-    subject: `Payment request: ${item}`.slice(0, 200),
     note: `Hello! Thank you for your interest in "${item}". You can pay securely with PayPal using the link in this message. I will ship from Japan as soon as the payment arrives. Best regards, ${seller}`.slice(0, 1000),
   });
 }
@@ -132,8 +131,7 @@ function nudge(input: { invoices?: Array<Record<string, unknown>> }): FakeReplyV
       const amount = inv.amount as { value?: string; currency_code?: string } | undefined;
       return {
         invoice_id: String(inv.invoice_id),
-        subject: `Friendly reminder: invoice ${no}`.trim(),
-        note: `Hello! Just a friendly reminder about invoice ${no}${amount?.value ? ` for ${amount.value} ${amount.currency_code ?? ""}`.trimEnd() : ""}. You can pay securely with PayPal using the link in this message. Thank you!`,
+        message: `Hello! Just a friendly reminder about invoice ${no}${amount?.value ? ` for ${amount.value} ${amount.currency_code ?? ""}`.trimEnd() : ""}. You can pay securely with PayPal from the invoice email (PayPal may also send you a reminder). Thank you!`,
       };
     }),
   });

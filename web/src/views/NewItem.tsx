@@ -21,7 +21,7 @@ interface Listing {
 interface Prepared {
   path: "invoice" | "order";
   proposal: Proposal;
-  buyer_message: { subject: string; note: string };
+  buyer_message: { note: string };
   generated_by: { provider: string; model?: string };
 }
 
@@ -134,7 +134,11 @@ export function NewItemView({ health, onProposal }: { health: Health; onProposal
 
       {prepared && (
         <ProposalCard proposal={prepared.proposal} onChange={onProposal}>
-          <p className="ai-note muted">Message to buyer <AiBadge by={prepared.generated_by} />: <em>{prepared.buyer_message.subject}</em> — {prepared.buyer_message.note}</p>
+          {prepared.path === "invoice" ? (
+            <p className="ai-note muted">Invoice note to the buyer (PayPal shows it on the invoice) <AiBadge by={prepared.generated_by} />: {prepared.buyer_message.note}</p>
+          ) : (
+            <p className="muted">Send the payment link to the buyer with the DM text below <AiBadge by={prepared.generated_by} />.</p>
+          )}
         </ProposalCard>
       )}
     </section>

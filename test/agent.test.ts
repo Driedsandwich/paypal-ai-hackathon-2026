@@ -79,7 +79,9 @@ describe("prepareInvoice / preparePaymentLink", () => {
       invoicer: { business_name: "Okuri Demo Shop" },
       items: [{ name: "Handmade Japanese Tea Bowl", description: "Stoneware.", quantity: "1", unit_amount: { currency_code: "USD", value: "80.00" }, unit_of_measure: "QUANTITY" }],
     });
-    expect(prepared.payload.notification).toMatchObject({ send_to_recipient: true, subject: expect.stringContaining("Tea Bowl") });
+    // The AI note travels in invoice.detail.note; the send notification has flags only (PayPal ignores custom subject/note there).
+    expect(prepared.payload.notification).toEqual({ send_to_recipient: true, send_to_invoicer: true });
+    expect(prepared.payload.invoice.detail.note).toContain("Tea Bowl");
   });
 
   it("allows other ISO currencies", async () => {
@@ -109,10 +111,11 @@ describe("nudgeUnpaid", () => {
       { invoice_id: "INV2-B", item_names: [] },
     ]);
     expect(reminders.map((r) => r.invoice_id)).toEqual(["INV2-A", "INV2-B"]);
-    expect(reminders[0]!.payload).toMatchObject({ invoiceId: "INV2-A", notification: { send_to_recipient: true } });
-    expect(reminders[0]!.payload.notification.note).toContain("80.00 USD");
+    // PayPal's standard reminder: flags only. The AI text is a DM copy for the seller.
+    expect(reminders[0]!.payload).toEqual({ invoiceId: "INV2-A", notification: { send_to_recipient: true, send_to_invoicer: true } });
+    expect(reminders[0]!.copy_for_dm).toContain("80.00 USD");
 
-    const liar = new FakeAiProvider([JSON.stringify({ reminders: [{ invoice_id: "INV2-FAKE", subject: "Hello", note: "Please pay now." }] })]);
+    const liar = new FakeAiProvider([JSON.stringify({ reminders: [{ invoice_id: "INV2-FAKE", message: "Please pay now, thank you." }] })]);
     expect((await new Agent(liar, CONFIG).nudgeUnpaid([{ invoice_id: "INV2-A", item_names: [] }])).reminders).toEqual([]);
   });
 
@@ -202,11 +205,11 @@ describe("free chat with tools", () => {
       {
         text: "I prepared these for your approval.",
         toolCalls: [
-          { name: "send_invoice_reminder", input: { invoice_id: "INV2-1", subject: "Reminder", note: "Friendly reminder to pay." } },
+          { name: "send_invoice_reminder", input: { invoice_id: "INV2-1", dm_message: "Friendly reminder to pay." } },
           { name: "create_shipment_tracking", input: { carrier: "Japan Post", tracking_number: "EJ123456789JP", transaction_id: "8MC585209K746392H" } },
           { name: "send_dispute_message", input: { dispute_id: "PP-D-1", message: "Hello" } },
           { name: "accept_dispute_claim", input: { dispute_id: "PP-D-1", note: "Refund" } },
-          { name: "create_invoice", input: { buyer: "Demo buyer 2", item_title: "Tea bowl", price: { currency_code: "USD", value: "80.00" }, subject: "Invoice", note: "Thanks for your order!" } },
+          { name: "create_invoice", input: { buyer: "Demo buyer 2", item_title: "Tea bowl", price: { currency_code: "USD", value: "80.00" }, note: "Thanks for your order!" } },
         ],
       },
     ]);
@@ -221,6 +224,7 @@ describe("free chat with tools", () => {
     expect(apiCalls()).toHaveLength(0);
     expect((res.proposals[3]!.payload as { trackers: Array<{ carrier: string }> }).trackers[0]!.carrier).toBe("JPN_JAPAN_POST");
     expect(res.proposals[0]!.payload).toMatchObject({ recipient_alias: "Demo buyer 2" });
+    expect(res.proposals[4]).toMatchObject({ title: "Send PayPal's standard reminder for invoice INV2-1", copyForDm: "Friendly reminder to pay.", payload: { invoiceId: "INV2-1", notification: { send_to_recipient: true, send_to_invoicer: true } } });
     expect(res.proposals.every((p) => p.owner === "session-me")).toBe(true);
     // Another session does not see them.
     expect(proposals.list({ owner: "someone-else" })).toEqual([]);
@@ -229,7 +233,7 @@ describe("free chat with tools", () => {
   it("create_invoice takes a demo buyer alias, never an email address", async () => {
     const proposals = new ProposalStore(async () => undefined);
     const tool = agentTools({ ...TOOL_BASE, paypal: undefined, proposals, agentConfig: CONFIG, paymentPath: "invoice" }).find((t) => t.name === "create_invoice")!;
-    const base = { item_title: "Tea bowl", price: { currency_code: "USD", value: "80.00" }, subject: "Invoice", note: "Thanks for your order!" };
+    const base = { item_title: "Tea bowl", price: { currency_code: "USD", value: "80.00" }, note: "Thanks for your order!" };
     expect(() => tool.inputSchema.parse({ ...base, buyer: fakeEmail("someone") })).toThrow();
     expect(() => tool.inputSchema.parse({ ...base, buyer_email: fakeEmail("someone") })).toThrow();
     expect(tool.description).not.toContain("@");
