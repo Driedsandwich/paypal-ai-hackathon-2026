@@ -187,8 +187,26 @@ export interface OrderResponse {
   purchase_units?: Array<{
     reference_id?: string;
     payments?: { captures?: Array<{ id: string; status: string; amount?: Money }> };
+    /** `shipping_with_tracking_details`: trackers added through POST /v2/checkout/orders/{id}/track. */
+    shipping?: { trackers?: OrderTracker[]; [key: string]: unknown };
     [key: string]: unknown;
   }>;
+  [key: string]: unknown;
+}
+
+/**
+ * `tracker` in an Orders v2 order (GET /v2/checkout/orders/{id}). PayPal's spec lists only
+ * id, status, items, links and timestamps; the id is "<capture id>-<tracking number>". The
+ * carrier is not part of it. tracking_number and carrier are read too, in case PayPal adds them.
+ */
+export interface OrderTracker {
+  id?: string;
+  status?: "SHIPPED" | "CANCELLED" | string;
+  tracking_number?: string;
+  carrier?: string;
+  carrier_name_other?: string;
+  create_time?: string;
+  update_time?: string;
   [key: string]: unknown;
 }
 

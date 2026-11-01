@@ -99,7 +99,8 @@ export interface Journey {
   invoice_status?: string;
   order_id?: string;
   capture_id?: string;
-  tracking?: { carrier: string; number: string; at: string };
+  /** No carrier when the tracking was read back from PayPal after a restart (Orders v2 does not return it). */
+  tracking?: { carrier?: string; number: string; at: string };
   created_at: string;
   drafted_by?: GeneratedBy;
   listing?: { title: string; description: string; price: Money; quantity: number; shipping?: Money };

@@ -9,7 +9,7 @@ import type { Proposal } from "../proposals/store.js";
 import { parseSaleMarker, type Sale, type SaleRegistry } from "./sales.js";
 
 /** Carrier as the seller typed it, from the stored tracker (code or OTHER + free text). */
-function carrierName(t: { carrier?: string; carrier_name_other?: string }): string {
+export function carrierName(t: { carrier?: string; carrier_name_other?: string }): string {
   if (t.carrier === "OTHER") return t.carrier_name_other ?? "Other carrier";
   const names: Record<string, string> = { JPN_JAPAN_POST: "Japan Post", YAMATO: "Yamato", JP_KURO_NEKO_YAMATO_UNYUU: "Yamato", SAGAWA: "Sagawa", JPN_SAGAWA: "Sagawa", DHL: "DHL", DHL_JP: "DHL Japan", FEDEX: "FedEx", UPS: "UPS", USPS: "USPS" };
   return names[t.carrier ?? ""] ?? t.carrier ?? "Carrier";

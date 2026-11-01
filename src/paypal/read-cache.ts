@@ -1,10 +1,12 @@
 import { TtlMap } from "../util/ttl-map.js";
 import type { PayPalApi } from "./offline.js";
-import type { Dispute, DisputeList, InvoiceList, ListDisputesParams, ListInvoicesParams } from "./types.js";
+import type { PayPalClient } from "./client.js";
+import type { CaptureDetail, Dispute, DisputeList, Invoice, InvoiceList, ListDisputesParams, ListInvoicesParams, OrderResponse } from "./types.js";
 
 /**
- * Short cache for PayPal list reads (invoices, disputes) and for disputes read by id while the
- * list does not return them yet (pass 3a), shared by all visitors (F2).
+ * Short cache for PayPal list reads (invoices, disputes), for disputes read by id while the
+ * list does not return them yet (pass 3a), and for the reads that complete rebuilt journeys
+ * (pass 6), shared by all visitors (F2).
  * Concurrent identical reads share one PayPal call. Raw PayPal data is cached; routes turn it
  * into public DTOs on the way out. Cleared after every executed action and webhook event.
  */
@@ -40,6 +42,22 @@ export class PayPalReadCache {
 
   getDispute(paypal: PayPalApi, disputeId: string): Promise<Dispute> {
     return this.cached(`dispute:${disputeId}`, () => paypal.getDispute(disputeId));
+  }
+
+  /** Pass 6: reads that complete journeys rebuilt after a restart (see src/journeys/rebuild.ts). */
+  getInvoice(paypal: PayPalApi, invoiceId: string): Promise<Invoice> {
+    return this.cached(`invoice:${invoiceId}`, () => paypal.getInvoice(invoiceId));
+  }
+
+  getOrder(paypal: PayPalApi, orderId: string): Promise<OrderResponse> {
+    return this.cached(`order:${orderId}`, () => paypal.getOrder(orderId));
+  }
+
+  /** Undefined when the PayPal stand-in cannot read captures (offline demo, some tests). */
+  getCapture(paypal: PayPalApi, captureId: string): Promise<CaptureDetail> | undefined {
+    const reader = paypal as PayPalApi & Partial<Pick<PayPalClient, "getCapture">>;
+    if (typeof reader.getCapture !== "function") return undefined;
+    return this.cached(`capture:${captureId}`, () => reader.getCapture!(captureId));
   }
 
   invalidate(): void {

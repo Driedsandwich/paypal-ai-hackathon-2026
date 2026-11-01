@@ -32,6 +32,7 @@ import { checkTrackingTarget, invoiceTrackingProposal } from "../journeys/create
 import { buildJourney, journeyCounts, saleFromInvoice } from "../journeys/journeys.js";
 import type { OfflineWorlds } from "../journeys/offline-world.js";
 import { recordExecution } from "../journeys/record.js";
+import { completeRebuiltSales } from "../journeys/rebuild.js";
 import { COUNTRIES, isCountry, saleMarker, type Sale, type SaleRegistry } from "../journeys/sales.js";
 import { knownDisputes, parseDisputeId, readAndRegister, saleOfDispute as linkedSale, type DisputeRegistry, type DisputeView } from "../journeys/disputes.js";
 import { PayPalApiError } from "../paypal/client.js";
@@ -377,7 +378,7 @@ const ROUTES: Route[] = [
         deps.sales.note(sale, "Payment link prepared, awaiting your approval");
         return ok(res, { path: "order", sale_id: sale.id, proposal: publicProposal(ctx, proposal), buyer_message: prepared.buyer_message, generated_by: prepared.generated_by });
       }
-      const prepared = await deps.agent.prepareInvoice(body.listing, { alias }, marker);
+      const prepared = await deps.agent.prepareInvoice(body.listing, { alias }, marker, sale.titleJa);
       const proposal = propose(ctx, "create_and_send_invoice", `Send invoice for ${showMoney(body.listing.price)} to ${alias}: ${body.listing.title}`, prepared.payload, undefined, sale.id);
       deps.sales.note(sale, "Invoice prepared, awaiting your approval");
       ok(res, { path: "invoice", sale_id: sale.id, proposal: publicProposal(ctx, proposal), buyer_message: prepared.buyer_message, generated_by: prepared.generated_by });
@@ -719,7 +720,7 @@ const ROUTES: Route[] = [
       if (s.paymentPath === "invoice") {
         payload = {
           invoices: listings.map((l, i) =>
-            buildInvoicePayload(l, deps.buyers.at(i).alias, { note: `Demo invoice for "${l.title}". Pay securely with PayPal (sandbox).` }, s.sellerBusinessName, markerOf(i)),
+            buildInvoicePayload(l, deps.buyers.at(i).alias, { note: `Demo invoice for "${l.title}". Pay securely with PayPal (sandbox).` }, s.sellerBusinessName, markerOf(i), DEMO_ITEMS[i]!.item.title_ja),
           ),
         };
       } else {
@@ -817,6 +818,8 @@ async function journeysFor(ctx: Ctx) {
       invoices = new Map((list.items ?? []).map((inv) => [inv.id, inv]));
       // After a restart: recognise this app's invoices by their marker and rebuild the journey.
       if (!deps.offline) for (const inv of list.items ?? []) if (!deps.sales.byInvoice(inv.id)) { const rebuilt = saleFromInvoice(inv, deps.buyers); if (rebuilt) deps.sales.adopt(rebuilt); }
+      // Pass 6: titles and tracking of rebuilt journeys from PayPal (a few cached reads at most).
+      if (!deps.offline) await completeRebuiltSales({ sales: deps.sales, reads: deps.reads }, paypal, invoices);
       const known = await knownDisputes(discoveryDeps(deps), paypal);
       disputes = known.items;
       if (known.listError !== undefined) warnings.push(readWarning(known.listError, "PayPal's dispute list"));

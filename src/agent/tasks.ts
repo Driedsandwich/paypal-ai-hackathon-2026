@@ -2,6 +2,7 @@ import { renderTextPdf } from "../docs/simple-pdf.js";
 import type { AiProvider } from "../ai/provider.js";
 import { PAYPAL_CURRENCIES, usdFromJpy } from "../money.js";
 import { carrierFor } from "../paypal/carriers.js";
+import { titleMemo } from "../journeys/sales.js";
 import type { CreateOrderRequest, DisputeEvidence, InvoiceDraft } from "../paypal/types.js";
 import type {
   CreateAndSendInvoicePayload,
@@ -163,9 +164,9 @@ export class Agent {
   }
 
   /** Task 2 (invoice path): invoice draft + notification for seller approval. Nothing is sent here. */
-  async prepareInvoice(listing: ListingForSale, buyer: Buyer, marker?: string): Promise<PreparedBilling<CreateAndSendInvoicePayload>> {
+  async prepareInvoice(listing: ListingForSale, buyer: Buyer, marker?: string, titleJa?: string): Promise<PreparedBilling<CreateAndSendInvoicePayload>> {
     const { value, provider, model, fallbackFrom } = await this.buyerMessage(listing);
-    const payload = buildInvoicePayload(listing, buyer.alias, value, this.config.sellerBusinessName, marker);
+    const payload = buildInvoicePayload(listing, buyer.alias, value, this.config.sellerBusinessName, marker, titleJa);
     return {
       payload,
       buyer_message: value,
@@ -283,15 +284,19 @@ export function buildInvoicePayload(
   sellerBusinessName?: string,
   /** Sale marker ("Okuri OK-1042 US") for `detail.reference`, so the app recognises its own invoices. */
   reference?: string,
+  /** Japanese item title, kept in the private `detail.memo` so a rebuilt journey shows it. */
+  titleJa?: string,
 ): CreateAndSendInvoicePayload {
   const currency = listing.price.currency_code;
   const totals = listingTotals(listing); // throws MoneyError if invalid (price or shipping)
   const unit = totals.unit;
+  const memo = titleMemo(titleJa);
   const invoice: InvoiceDraft = {
     detail: {
       currency_code: listing.price.currency_code,
       ...(reference ? { reference } : {}),
       note: message.note,
+      ...(memo ? { memo } : {}),
       payment_term: { term_type: "NET_10" },
     },
     ...(sellerBusinessName ? { invoicer: { business_name: sellerBusinessName } } : {}),

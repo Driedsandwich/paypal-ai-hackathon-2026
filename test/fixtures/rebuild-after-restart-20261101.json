@@ -1,0 +1,144 @@
+{
+  "_about": "Shapes for pass 6 (journeys rebuilt after a restart). NOT a recording: the hosted check of 2026-11-01 showed the list entry without items (title fell back to 'Invoice 0008'); the other bodies follow PayPal's OpenAPI specs (invoicing_v2 'invoice' with detail.memo, payments_v2 capture with supplementary_data.related_ids.order_id as recorded in pass 5b, checkout_orders_v2 'order' with purchase_units[].shipping.trackers[] whose 'tracker' has id, status, items, links and timestamps only; the id is '<capture id>-<tracking number>'). Ids and numbers are made up. Recipient e-mail addresses are added by the test (no address in the repository).",
+  "list_entry": {
+    "id": "INV2-TEST-0000-0000-0008",
+    "status": "PAID",
+    "detail": {
+      "currency_code": "USD",
+      "invoice_number": "0008",
+      "invoice_date": "2026-11-01",
+      "reference": "Okuri OK-8789 US"
+    },
+    "invoicer": {
+      "business_name": "Okuri Demo Shop"
+    },
+    "amount": {
+      "currency_code": "USD",
+      "value": "135.00"
+    },
+    "due_amount": {
+      "currency_code": "USD",
+      "value": "0.00"
+    }
+  },
+  "invoice": {
+    "id": "INV2-TEST-0000-0000-0008",
+    "status": "PAID",
+    "detail": {
+      "currency_code": "USD",
+      "invoice_number": "0008",
+      "invoice_date": "2026-11-01",
+      "reference": "Okuri OK-8789 US",
+      "note": "Thank you for your order.",
+      "memo": "Okuri item (Japanese title): 南部鉄器 鉄瓶 0.8L 新品",
+      "payment_term": {
+        "term_type": "NET_10"
+      }
+    },
+    "invoicer": {
+      "business_name": "Okuri Demo Shop"
+    },
+    "items": [
+      {
+        "name": "New Japanese Cast Iron Kettle (Tetsubin), 0.8 L",
+        "quantity": "1",
+        "unit_amount": {
+          "currency_code": "USD",
+          "value": "120.00"
+        },
+        "unit_of_measure": "QUANTITY"
+      }
+    ],
+    "amount": {
+      "currency_code": "USD",
+      "value": "135.00",
+      "breakdown": {
+        "shipping": {
+          "amount": {
+            "currency_code": "USD",
+            "value": "15.00"
+          }
+        }
+      }
+    },
+    "payments": {
+      "paid_amount": {
+        "currency_code": "USD",
+        "value": "135.00"
+      },
+      "transactions": [
+        {
+          "payment_id": "3B6192453A677052J",
+          "payment_date": "2026-11-01 PST",
+          "method": "PAYPAL",
+          "amount": {
+            "currency_code": "USD",
+            "value": "135.00"
+          }
+        }
+      ]
+    }
+  },
+  "capture": {
+    "id": "3B6192453A677052J",
+    "status": "COMPLETED",
+    "invoice_id": "INV2-TEST-0000-0000-0008",
+    "supplementary_data": {
+      "related_ids": {
+        "order_id": "2C993603RE5743412"
+      }
+    }
+  },
+  "order_with_tracker": {
+    "id": "2C993603RE5743412",
+    "status": "COMPLETED",
+    "purchase_units": [
+      {
+        "reference_id": "default",
+        "shipping": {
+          "trackers": [
+            {
+              "id": "3B6192453A677052J-EJ123456789JP",
+              "status": "SHIPPED",
+              "items": [],
+              "links": [
+                {
+                  "href": "https://api.sandbox.paypal.com/v1/shipping/trackers/3B6192453A677052J-EJ123456789JP",
+                  "rel": "self",
+                  "method": "GET"
+                }
+              ],
+              "create_time": "2026-11-01T09:30:00Z",
+              "update_time": "2026-11-01T09:30:00Z"
+            }
+          ]
+        },
+        "payments": {
+          "captures": [
+            {
+              "id": "3B6192453A677052J",
+              "status": "COMPLETED"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "order_without_trackers": {
+    "id": "2C993603RE5743412",
+    "status": "COMPLETED",
+    "purchase_units": [
+      {
+        "reference_id": "default",
+        "payments": {
+          "captures": [
+            {
+              "id": "3B6192453A677052J",
+              "status": "COMPLETED"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

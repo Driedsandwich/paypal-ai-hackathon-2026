@@ -41,6 +41,24 @@ export function parseSaleMarker(value: unknown): { saleId: string; country: stri
   return m ? { saleId: m[1]!, country: m[2]! } : undefined;
 }
 
+/**
+ * Japanese item title in the invoice's `detail.memo` ("A private bookkeeping memo for the user"
+ * in PayPal's Invoicing v2 spec; not part of what the recipient is shown), so a journey rebuilt
+ * after a restart keeps it. The fixed prefix keeps other memos on the shared sandbox from
+ * becoming titles; it is read only together with the sale marker.
+ */
+const TITLE_MEMO_PREFIX = "Okuri item (Japanese title): ";
+
+export function titleMemo(titleJa: string | undefined): string | undefined {
+  const t = titleJa?.trim();
+  return t ? `${TITLE_MEMO_PREFIX}${t.slice(0, 200)}` : undefined;
+}
+
+export function parseTitleMemo(memo: unknown): string | undefined {
+  if (typeof memo !== "string" || !memo.startsWith(TITLE_MEMO_PREFIX)) return undefined;
+  return memo.slice(TITLE_MEMO_PREFIX.length).trim().slice(0, 200) || undefined;
+}
+
 export interface SaleActivity {
   at: string;
   text: string;
@@ -69,12 +87,15 @@ export interface Sale {
   /** PayPal transaction id of the payment (invoice payments). */
   transactionId?: string;
   paidAt?: string;
-  tracking?: { carrier: string; number: string; at: string };
+  /** carrier is missing when the tracking was read back from Orders v2 (PayPal does not return it there). */
+  tracking?: { carrier?: string; number: string; at: string };
   /** Offline simulator only: the parcel was delivered. */
   deliveredAt?: string;
   /** Which AI provider and model drafted the listing. */
   draftedBy?: { provider: string; model?: string };
   activity: SaleActivity[];
+  /** Sales rebuilt from PayPal after a restart: bounded follow-up reads (src/journeys/rebuild.ts). */
+  rebuilt?: { detailRead?: boolean; checkedAt?: number };
 }
 
 export const SALE_REGISTRY_TTL_MS = 7 * 86_400_000;

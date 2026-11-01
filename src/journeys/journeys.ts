@@ -4,7 +4,7 @@ import { publicProposal } from "../http/dto.js";
 import { sellerActionState } from "../paypal/dispute-actions.js";
 import type { Proposal } from "../proposals/store.js";
 import { disputeMatchesSale, type DisputeView } from "./disputes.js";
-import { COUNTRIES, parseSaleMarker, type Sale, type SaleRegistry } from "./sales.js";
+import { COUNTRIES, parseSaleMarker, parseTitleMemo, type Sale, type SaleRegistry } from "./sales.js";
 
 // Builds the "transaction journey" view (S3): one sale followed through five steps
 // (Draft, Invoice, Paid, Tracking, Delivered) with an exception branch for disputes. The
@@ -15,6 +15,9 @@ export type StepState = "done" | "current" | "todo";
 export type JourneyStage = "draft" | "invoiced" | "paid" | "shipped" | "delivered";
 
 const PAID = new Set(["PAID", "MARKED_AS_PAID", "PAID_EXTERNAL", "PARTIALLY_REFUNDED", "REFUNDED", "MARKED_AS_REFUNDED", "REFUNDED_EXTERNAL"]);
+export function isPaidInvoiceStatus(status: string | undefined): boolean {
+  return Boolean(status && PAID.has(status));
+}
 const SENT = new Set(["SENT", "UNPAID", "PARTIALLY_PAID", "PAYMENT_PENDING", "SCHEDULED", "SHARED"]);
 const OPEN_PROBLEM = new Set<Proposal["status"]>(["failed", "unknown", "obsolete"]);
 
@@ -43,17 +46,29 @@ export function absorbInvoice(registry: SaleRegistry, sale: Sale, inv: Invoice):
   }
 }
 
+/**
+ * Titles of a rebuilt sale from the invoice: English from the first item's name, Japanese from
+ * the private memo (pass 6). Invoices without them (older ones, or list entries without items)
+ * leave what the sale has.
+ */
+export function absorbInvoiceTitles(sale: Sale, inv: Invoice): void {
+  const name = inv.items?.[0]?.name?.trim();
+  if (name) sale.titleEn = name;
+  const ja = parseTitleMemo(inv.detail?.memo);
+  if (ja) sale.titleJa = ja;
+}
+
 /** A sale rebuilt from one of this app's invoices after a restart (marker in detail.reference). */
 export function saleFromInvoice(inv: Invoice, buyers: DemoBuyers): Sale | undefined {
   const marker = parseSaleMarker(inv.detail?.reference);
   if (!marker) return undefined;
   const email = inv.primary_recipients?.[0]?.billing_info?.email_address;
   const created = inv.detail?.invoice_date ? new Date(`${inv.detail.invoice_date}T00:00:00Z`).toISOString() : new Date().toISOString();
-  return {
+  const sale: Sale = {
     id: marker.saleId,
     owner: "",
     createdAt: created,
-    titleEn: inv.items?.[0]?.name ?? `Invoice ${inv.detail?.invoice_number ?? inv.id}`,
+    titleEn: `Invoice ${inv.detail?.invoice_number ?? inv.id}`,
     buyerAlias: (email && buyers.aliasOf(email)) ?? "Demo buyer",
     country: marker.country,
     ...(inv.amount?.value ? { amount: { currency_code: inv.amount.currency_code ?? inv.detail.currency_code, value: inv.amount.value } } : {}),
@@ -61,7 +76,11 @@ export function saleFromInvoice(inv: Invoice, buyers: DemoBuyers): Sale | undefi
     invoiceId: inv.id,
     ...(inv.detail?.invoice_number ? { invoiceNumber: inv.detail.invoice_number } : {}),
     activity: [{ at: created, text: "Invoice sent via PayPal (recovered from PayPal after a restart)" }],
+    // The list may carry items and memo; otherwise rebuild.ts reads the invoice once.
+    rebuilt: { ...(inv.items?.[0]?.name && parseTitleMemo(inv.detail?.memo) ? { detailRead: true } : {}) },
   };
+  absorbInvoiceTitles(sale, inv);
+  return sale;
 }
 
 /** The dispute about this sale's payment (an open one first, if the buyer opened several). */
@@ -126,7 +145,7 @@ export function buildJourney(sale: Sale, ctx: JourneyContext) {
       case 3:
         return paid ? "Payment received" : current === 3 ? "Waiting for buyer" : "Waiting for buyer";
       case 4:
-        return tracked ? `${sale.tracking!.carrier} ${sale.tracking!.number}` : current === 4 ? "Add tracking after shipment" : "After shipment";
+        return tracked ? `${sale.tracking!.carrier ?? "Tracking"} ${sale.tracking!.number}` : current === 4 ? "Add tracking after shipment" : "After shipment";
       default:
         return delivered ? "Delivered" : current === 5 ? "In transit" : "Delivery confirmation";
     }
