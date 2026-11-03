@@ -114,6 +114,7 @@ repository was created during that period. Dated log of the work (newest last):
 | 2026-11-01 | Hosted demo on Render checked end to end against the real sandbox: invoices created, sent and paid in USD from a Japan-based sandbox merchant; a buyer dispute opened by its case ID and the seller's evidence submitted through the Disputes API after approval; demo video recorded from the hosted demo; README for judges. |
 | 2026-11-01 | Pass 5 (after the hosted-demo checks): dispute evidence notes and replies sendable as is (seller to-dos listed separately, no claims of attachments that are not there); a refused evidence type offers a new OTHER proposal; the case is re-read after a dispute action; invoice notes with shipping state the total; a clear message when PayPal refuses Add Tracking for lack of permission. Pass 5b: tracking for invoice payments goes through Orders v2 `/track` on the order PayPal names for the payment (checked live on the hosted demo). |
 | 2026-11-01 | Pass 6 (after a restart of the free hosting instance): journeys rebuilt from PayPal keep their titles (English from the invoice item, Japanese from the invoice's private memo) and show tracking registered with PayPal (read from the Orders v2 order behind the invoice payment), with a few cached PayPal reads at most per page load. |
+| 2026-11-04 | Seal mark (owner's choice): the outline square next to the wordmark became a vermilion square stamp with a white 送 and a light stamped texture, so it no longer reads as a missing-glyph box or a checkbox; the same seal is the favicon. |
 
 ## Setup
 
@@ -417,7 +418,7 @@ during the submission period). Dependencies added in this build are pinned to ex
 | `vitest` 4.1.12 (dev) | MIT | Unit tests |
 | `@types/node` 20.19.43, `@types/react` 19.3.0, `@types/react-dom` 19.3.0 (dev) | MIT | Type definitions |
 | `ag-studio-react` 3.0.0, `ag-studio` 3.0.0 (with `ag-grid-enterprise`, `ag-grid-react`, `ag-charts-enterprise`, `ag-stack`) | Commercial (AG Grid EULA); runs as a trial without `AG_STUDIO_LICENSE` | Insights dashboard (embedded analytics) |
-| `@fontsource/noto-sans-jp` 5.3.1, `@fontsource/noto-serif-jp` 5.3.1 (Noto Sans JP / Noto Serif JP by Google) | OFL-1.1 | Self-hosted UI fonts |
+| `@fontsource/noto-sans-jp` 5.3.1, `@fontsource/noto-serif-jp` 5.3.1 (Noto Sans JP / Noto Serif JP by Google) | OFL-1.1 | Self-hosted UI fonts; the seal mark and favicon embed the outline of one glyph (送) from Noto Serif JP Bold |
 | Render (free web service) | Render terms | Hosting of the demo |
 | PayPal OpenAPI specifications (`paypal/paypal-rest-api-specifications`) | Reference only, not copied | Checked request/response field names |
 

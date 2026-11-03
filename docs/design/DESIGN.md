@@ -71,8 +71,11 @@ outer margin 16 px; touch targets at least 44×44 px; at least 8 px between Appr
 
 Components
 - Step marks: line icons, label, count, thin connectors. Not five filled cards.
-- Approval items: ledger-like rows or callouts with rules, not heavy cards. Abstract square
-  "seal" mark is decorative only (no text, no logo, not a checkbox look-alike).
+- Approval items: ledger-like rows or callouts with rules, not heavy cards. The "seal" mark next to
+  the wordmark is decorative only: a filled vermilion square stamp with a white 送 ("send", as in
+  Okuri), tilted 4° with a light stamped texture, also used as the favicon. The glyph is an outline
+  path from Noto Serif JP Bold (OFL-1.1), not live text. Changed on 2026-11-04 by the owner's
+  choice; it was an outline square, which could read as a missing-glyph box or a checkbox.
 - Buttons: Approve = vermilion fill; Reject / secondary = ink outline; radius 2–4 px.
 - Navigation: selected item marked by a vermilion rule and a lighter paper tone.
 - Subtle paper texture is allowed only if body contrast stays high (WCAG AA).

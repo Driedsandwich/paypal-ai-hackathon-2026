@@ -554,3 +554,11 @@ approve, PayPal sent the invoice).
     (`REBUILD_RECHECK_MS`); a sale with tracking is never checked again. Failed reads are
     swallowed: the journey stays as it was and no warning is shown. Newest rebuilt sales go
     first.
+82. **Seal mark (2026-11-04, owner's choice from three mockups).** The decorative mark after the
+    wordmark is a filled vermilion square stamp (kakuin) with a white 送 ("send", as in Okuri),
+    tilted 4° with a stamped texture made by an SVG filter (looks the same in Chromium, WebKit
+    and Firefox). The glyph is an outline path taken from Noto Serif JP Bold (OFL-1.1, already
+    shipped by the UI), so no installed font is needed. The same seal is the favicon
+    (`favicon.svg`, with 32 px and 180 px PNG fallbacks). Replaces the outline square, which
+    could be read as a missing-glyph box or a checkbox. Still `aria-hidden`; the link keeps its
+    "Okuri home" label.

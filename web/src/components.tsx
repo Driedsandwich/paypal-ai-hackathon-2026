@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from "react";
+import { SEAL_GLYPH } from "./seal-glyph";
 import { addMoney, api, ApiError, itemPlusShipping, money, providerLabel, type Journey, type Money, type Proposal } from "./api";
 
 export function ErrorBox({ error }: { error: unknown }) {
@@ -80,9 +81,28 @@ export function Icon({ name, size = 20, title }: { name: string; size?: number; 
   );
 }
 
-/** Decorative seal square (A1). No text, not interactive. */
+/**
+ * Decorative seal (A1 "Paper & seal"): a vermilion square stamp with a white 送 ("send", as in
+ * Okuri), slightly tilted with a light stamped texture. Not interactive, hidden from assistive tech.
+ */
 export function Seal({ size = 22 }: { size?: number }) {
-  return <span className="seal" style={{ width: size, height: size }} aria-hidden="true" />;
+  return (
+    <svg className="seal" width={size} height={size} viewBox="0 0 100 100" aria-hidden="true" focusable="false">
+      <defs>
+        <filter id="okuri-seal-stamp" x="-15%" y="-15%" width="130%" height="130%" colorInterpolationFilters="sRGB">
+          <feTurbulence type="fractalNoise" baseFrequency="0.09" numOctaves={2} seed={4} result="wobble" />
+          <feDisplacementMap in="SourceGraphic" in2="wobble" scale={2.6} xChannelSelector="R" yChannelSelector="G" result="edge" />
+          <feTurbulence type="fractalNoise" baseFrequency="0.4" numOctaves={3} seed={9} result="grain" />
+          <feColorMatrix in="grain" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 -18 13.2" result="ink" />
+          <feComposite in="edge" in2="ink" operator="in" />
+        </filter>
+      </defs>
+      <g filter="url(#okuri-seal-stamp)" transform="rotate(-4 50 50)">
+        <rect x="2" y="2" width="96" height="96" rx="8" style={{ fill: "var(--accent)" }} />
+        <path d={SEAL_GLYPH.d} transform={`translate(50 50) scale(${70 / SEAL_GLYPH.height})`} style={{ fill: "var(--paper)" }} />
+      </g>
+    </svg>
+  );
 }
 
 // ---------- Proposals ----------
