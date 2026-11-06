@@ -112,5 +112,9 @@ export function sendError(res: ServerResponse, err: unknown, log: (msg: string) 
   if (/^AI_|APICallError|RetryError/.test(name)) {
     return sendJson(res, 502, { ok: false, error: { code: "ai_provider_error", message: "The AI provider could not answer. Please try again later." } });
   }
+  if (err instanceof TypeError && /fetch failed/i.test(err.message)) {
+    // Network-level failure (DNS, connection refused) on a read: say so instead of a bare 500.
+    return sendJson(res, 502, { ok: false, error: { code: "upstream_unreachable", message: "PayPal or the AI provider could not be reached. Please try again in a minute." } });
+  }
   return sendJson(res, 500, { ok: false, error: { code: "internal_error", message: "Internal error" } });
 }

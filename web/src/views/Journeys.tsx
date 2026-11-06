@@ -3,6 +3,9 @@ import { api, itemPlusShipping, money, providerLabel, shortTime, type Health, ty
 import { go, type ViewProps } from "../App";
 import { CopyForDm, DecisionButtons, ErrorBox, Icon, KIND_LABEL, ProposalOutcome, ProposalSummary, useAction } from "../components";
 
+// The list shows the stage the sale has reached (not the step it is waiting for).
+const STAGE_LABEL: Record<string, string> = { draft: "Draft", invoiced: "Invoiced", paid: "Paid", shipped: "Shipped", delivered: "Delivered" };
+
 /** The S3 journey home: one sale at a time, from the seller in Japan to the buyer abroad. */
 export function JourneysView({ health, data, dataError, refresh, route }: ViewProps) {
   const journeys = data?.journeys ?? [];
@@ -29,7 +32,7 @@ export function JourneysView({ health, data, dataError, refresh, route }: ViewPr
                   <span className="num muted">{j.id}</span>
                   <span className="clamp1 jp">{j.title_ja ?? j.title_en}</span>
                   <span className="muted clamp1">{j.country_name}</span>
-                  <span className="muted">{j.steps[Math.min(j.current_step, 5) - 1]?.name}{j.current_step > 5 ? " ✓" : ""}{j.dispute?.open ? " · disputed" : ""}</span>
+                  <span className="muted">{STAGE_LABEL[j.stage] ?? j.stage}{j.stage === "delivered" ? " ✓" : ""}{j.dispute?.open ? " · disputed" : ""}</span>
                 </a>
               </li>
             ))}

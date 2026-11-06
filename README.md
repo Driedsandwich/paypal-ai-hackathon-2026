@@ -118,7 +118,7 @@ repository was created during that period. Dated log of the work (newest last):
 
 ## Setup
 
-Requirements: Node.js 20.19 or later (22 recommended), npm, and a free PayPal developer
+Requirements: Node.js 20.19+ or 22.12+ (22 recommended), npm, and a free PayPal developer
 account (sandbox REST app with a client ID and secret). For a real AI model, an API key for
 Anthropic, Google AI (Gemini) or OpenAI. Without any keys the app still runs offline.
 
@@ -171,7 +171,8 @@ PAYPAL_OFFLINE_DEMO=true node dist/server.js
 
 Every browser gets a private, in-memory PayPal with six sample sales (one waiting for invoice
 approval, one waiting for payment, one waiting for tracking approval, one shipped with an open
-dispute, one delivered, one draft). Approve, reject, prepare and *Simulate…* buttons all work;
+dispute, one delivered, one draft); Approvals starts with three proposals (that invoice, PayPal's
+reminder for the unpaid sale, and the tracking). Approve, reject, prepare and *Simulate…* buttons all work;
 nothing leaves the process. Screenshots: `node scripts/screenshots.mjs` (needs Playwright with
 Chromium, not a project dependency) writes them to `docs/media/`.
 
@@ -217,6 +218,7 @@ small DTOs with email addresses masked. Limits answer 429 (or 503 when busy) wit
 | Method and path | What it does |
 | --- | --- |
 | `GET /api/health` (also `/health`) | Configuration status, AI model, limits, banner messages |
+| `GET /api/demo/items` | The sample items behind New item's quick-fill buttons |
 | `POST /api/listings/draft` | AI: Japanese item → English listing (rate limited) |
 | `POST /api/invoices/prepare` | AI: buyer note + invoice (or payment link) **proposal** for a demo buyer; optional `listing.shipping` (same currency as the price) becomes the invoice's shipping charge |
 | `POST /api/payment-links/prepare` | AI: Orders v2 payment link **proposal** for a demo buyer |
@@ -235,6 +237,7 @@ small DTOs with email addresses masked. Limits answer 429 (or 503 when busy) wit
 | `GET /api/journeys` | Sales (journeys) you can see, with steps, the callout for the current step, dispute branch, activity and counts |
 | `POST /api/offline/simulate` | Offline demo only: act as the buyer (`payment`, `dispute`) or the carrier (`delivery`) for one of your sales |
 | `POST /webhooks/paypal` | PayPal webhook receiver (signature verified via PayPal) |
+| `GET /paypal/return`, `GET /paypal/cancel` | Pages the buyer lands on after approving or cancelling a payment link |
 
 ## Test
 

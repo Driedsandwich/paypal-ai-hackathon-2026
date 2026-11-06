@@ -56,7 +56,7 @@ export async function handlePayPalReturn(req: IncomingMessage, res: ServerRespon
   try {
     queueCapture(deps, token);
   } catch {
-    // Queue full: PayPal still reports the approval; the seller can capture from Shipments.
+    // Queue full: PayPal still reports the approval; the seller can capture from the journey or Approvals.
   }
   return send("approved");
 }
