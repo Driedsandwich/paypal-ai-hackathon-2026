@@ -137,7 +137,7 @@ export function App() {
       )}
       <details className="notice-mobile">
         <summary>
-          <Icon name="alert" size={16} /> Demo mode{health.paypal.offline ? " · offline: PayPal is simulated" : ""}{health.ai.provider === "fake" ? " · offline AI" : ""} · nothing is sent until you approve
+          <Icon name="alert" size={16} /> Demo mode{health.paypal.offline ? " · offline: PayPal is simulated" : " · PayPal sandbox, no real money"}{health.ai.provider === "fake" ? " · offline AI" : ""} · nothing is sent until you approve · start with + New item
           {health.banner.length > 0 && <span className="muted"> (details)</span>}
         </summary>
         <p>{health.demo.notice}</p>
