@@ -27,16 +27,18 @@ const MARKED_INVOICE = {
 };
 
 /** A sandbox whose dispute list can lag behind (state.listed) and whose dispute can change. */
-function lagging(state: { listed: boolean; dispute: Dispute | undefined; listFails?: boolean; invoices?: unknown[] }) {
+function lagging(state: { listed: boolean; dispute: Dispute | undefined; listFails?: boolean; invoices?: unknown[]; buyerIdsOnly?: boolean }) {
   return paypalWith((c: RecordedCall) => {
     const u = c.url.replace(SANDBOX, "");
     if (u.startsWith("/v2/invoicing/invoices?")) return { json: { items: state.invoices ?? [MARKED_INVOICE] } };
     if (u === `/v2/invoicing/invoices/${MARKED_INVOICE.id}`) return { json: MARKED_INVOICE };
     if (u.startsWith("/v1/customer/disputes?")) {
       if (state.listFails) return { status: 500, json: paypalError("INTERNAL_SERVER_ERROR", "dbg-list") };
-      // The list item: summary fields only (no transactions, no messages).
+      // The list item: summary fields only (no messages). With buyerIdsOnly it carries the
+      // transaction as the sandbox list really does (checked 2026-11-06): buyer ids only.
       const d = state.dispute;
-      return { json: { items: state.listed && d ? [{ dispute_id: d.dispute_id, reason: d.reason, status: d.status, dispute_amount: d.dispute_amount, dispute_life_cycle_stage: d.dispute_life_cycle_stage, links: [{ rel: "self", href: `${SANDBOX}/v1/customer/disputes/${d.dispute_id}` }] }] : [] } };
+      const tx = state.buyerIdsOnly ? { disputed_transactions: [{ buyer_transaction_id: "4VN01055VX762091P", buyer: { payer_id: "BUYER1" }, seller: { merchant_id: "SELLER1" } }] } : {};
+      return { json: { items: state.listed && d ? [{ dispute_id: d.dispute_id, reason: d.reason, status: d.status, dispute_amount: d.dispute_amount, dispute_life_cycle_stage: d.dispute_life_cycle_stage, ...tx, links: [{ rel: "self", href: `${SANDBOX}/v1/customer/disputes/${d.dispute_id}` }] }] : [] } };
     }
     const m = /^\/v1\/customer\/disputes\/([^/?]+)$/.exec(u);
     if (m && c.method === "GET") return state.dispute && m[1] === state.dispute.dispute_id ? { json: state.dispute } : { status: 404, json: paypalError("RESOURCE_NOT_FOUND", "dbg-404") };
@@ -139,6 +141,27 @@ describe("dispute discovery: list, then registered ids", () => {
     journey = (await app.get("/api/journeys")).body.data.journeys.find((j: any) => j.id === "OK-2042");
     expect(journey.dispute).toMatchObject({ dispute_id: CASE_ID, in_paypal_list: true });
     expect(disputeReads(pp.calls).length).toBe(before); // listed cases are not read one by one
+    expect(pp.calls.filter((c) => c.method !== "GET" && !c.url.endsWith("/v1/oauth2/token"))).toHaveLength(0);
+  });
+
+  it("after a restart, a listed case whose list item has buyer ids only is read by id once and linked; later list reads keep the seller ids", async () => {
+    // Real sandbox shape (2026-11-06): the list item's disputed_transactions has buyer_transaction_id only.
+    const state = { listed: true, buyerIdsOnly: true, dispute: FIXTURE as Dispute | undefined };
+    const pp = lagging(state);
+    const disputes = new DisputeRegistry();
+    const app = await start({ settings: LIVE, paypalConfig: FAKE_CONFIG, paypal: pp.client, disputes });
+
+    const first = (await app.get("/api/journeys")).body.data;
+    expect(first.journeys.find((j: any) => j.id === "OK-2042").dispute).toMatchObject({ dispute_id: CASE_ID, in_paypal_list: true });
+    expect(first.counts.disputed).toBe(1);
+    expect(disputeReads(pp.calls)).toHaveLength(1);
+
+    // Next loads: the list's buyer-only transaction does not overwrite the seller ids, and no new read.
+    const rows = (await app.get("/api/disputes")).body.data.disputes;
+    expect(rows).toEqual([expect.objectContaining({ dispute_id: CASE_ID, in_paypal_list: true, sale_id: "OK-2042" })]);
+    expect((await app.other().get("/api/journeys")).body.data.counts.disputed).toBe(1);
+    expect(disputes.get(CASE_ID)?.data?.disputed_transactions?.[0]?.seller_transaction_id).toBe(SELLER_TX);
+    expect(disputeReads(pp.calls)).toHaveLength(1);
     expect(pp.calls.filter((c) => c.method !== "GET" && !c.url.endsWith("/v1/oauth2/token"))).toHaveLength(0);
   });
 

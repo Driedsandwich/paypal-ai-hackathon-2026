@@ -582,3 +582,12 @@ approve, PayPal sent the invoice).
     stays the one that decides. API errors come back as an error result with the API's
     `error.code` and `message`. Decision: no new endpoint and no server-side MCP, because a
     client of the public API keeps the gate in one place and works against any deployment.
+84. **Linking listed disputes after a restart (2026-11-06).** PayPal's sandbox dispute list gives
+    `disputed_transactions` with `buyer_transaction_id` only (no `seller_transaction_id`, no
+    invoice number; checked against the live sandbox). Before this, a list item with any
+    transaction replaced the seller ids a read by id had given, so after a restart the cases
+    showed on the Disputes page but not on their journeys or in the counts. Now only
+    transactions that name the seller payment or the invoice count, both in the registry and in
+    the list rows, and a listed case without them is read by id (cached; at most
+    `MAX_DISPUTE_FILL_READS` = 2 per page load, each at most once per 10 minutes) so it links
+    on its own. Test: the list fixture can carry the real buyer-only shape.

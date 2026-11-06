@@ -116,6 +116,7 @@ repository was created during that period. Dated log of the work (newest last):
 | 2026-11-01 | Pass 6 (after a restart of the free hosting instance): journeys rebuilt from PayPal keep their titles (English from the invoice item, Japanese from the invoice's private memo) and show tracking registered with PayPal (read from the Orders v2 order behind the invoice payment), with a few cached PayPal reads at most per page load. |
 | 2026-11-04 | Seal mark (owner's choice): the outline square next to the wordmark became a vermilion square stamp with a white 送 and a light stamped texture, so it no longer reads as a missing-glyph box or a checkbox; the same seal is the favicon. Screenshots in `docs/media/` retaken with `scripts/screenshots.mjs` (the `compare-*` images are kept as they were). |
 | 2026-11-06 | MCP server (`src/mcp/server.ts`, `npm run mcp`): lets other AI agents use Okuri's JSON API as tools over stdio; writes stay proposals, approve and reject tools offered with `destructiveHint` so the client asks the person each time (`OKURI_MCP_ALLOW_APPROVE=0` removes them); `test/mcp.test.ts`; the server side is unchanged. |
+| 2026-11-06 | Disputes after a restart: PayPal's sandbox list names only the buyer's transaction, so listed cases are read by id (a few per page load) and link to their journeys again; seller ids from a read by id are no longer overwritten by the list (decision 84). |
 
 ## Setup
 

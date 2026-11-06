@@ -20,6 +20,8 @@ export interface KnownDispute {
   firstSeen: string;
   /** What PayPal last said about it, reduced (no messages, evidence or buyer details). */
   data?: Dispute;
+  /** When a listed case without seller ids was last read by id to link it (ms). */
+  fillTriedAt?: number;
 }
 
 /** One dispute as the app shows it: PayPal's data plus where the app learned about it. */
@@ -36,6 +38,13 @@ export const DISPUTE_REGISTRY_TTL_MS = 30 * 86_400_000;
 export const DISPUTE_REGISTRY_MAX = 2_000;
 /** Ids not in PayPal's list are read by id, at most this many per page load (newest first). */
 export const MAX_DISPUTE_READS_BY_ID = 10;
+/**
+ * Listed cases whose list item names no seller transaction (PayPal's sandbox list gives only
+ * buyer_transaction_id, checked 2026-11-06) are read by id to link them to a sale: at most this
+ * many per page load, each at most once per DISPUTE_FILL_RETRY_MS.
+ */
+export const MAX_DISPUTE_FILL_READS = 2;
+export const DISPUTE_FILL_RETRY_MS = 10 * 60_000;
 /**
  * A registered id that PayPal answers 404 for is dropped, but only after this long: a case
  * announced by a verified webhook may not be readable at once (PayPal's list lags too).
@@ -101,7 +110,7 @@ export class DisputeRegistry {
     if (data) {
       const next = reduceDispute(data);
       const old = entry.data;
-      if (!next.disputed_transactions?.length && old?.disputed_transactions?.length) next.disputed_transactions = old.disputed_transactions;
+      if (!hasSaleIds(next.disputed_transactions) && hasSaleIds(old?.disputed_transactions)) next.disputed_transactions = old?.disputed_transactions;
       if (!detailed) {
         if (old?.links) next.links = old.links;
         else delete next.links;
@@ -159,6 +168,11 @@ export class DisputeRegistry {
 
 type Tx = { seller_transaction_id?: string; invoice_number?: string };
 
+/** True when some transaction names the seller's payment (seller_transaction_id) or the invoice number. */
+function hasSaleIds(t?: Tx[]): boolean {
+  return (t ?? []).some((x) => Boolean(x.seller_transaction_id || x.invoice_number));
+}
+
 /** True when the dispute is about this sale's payment (invoice transaction or order capture). */
 export function disputeMatchesSale(d: { disputed_transactions?: Tx[] }, sale: Sale): boolean {
   return (d.disputed_transactions ?? []).some(
@@ -204,10 +218,30 @@ export async function knownDisputes(deps: KnownDisputesDeps, paypal: PayPalApi):
 
   const fromList: DisputeView[] = list.map((d) => {
     const entry = deps.disputes.note(d.dispute_id, "list", d);
-    // List items may lack the transaction ids; use what a read by id gave earlier.
-    const dispute = d.disputed_transactions?.length || !entry.data?.disputed_transactions?.length ? d : { ...d, disputed_transactions: entry.data.disputed_transactions };
+    // List items may lack the seller transaction ids (PayPal's list gives buyer ids only); use what a read by id gave earlier.
+    const dispute = hasSaleIds(d.disputed_transactions) || !hasSaleIds(entry.data?.disputed_transactions) ? d : { ...d, disputed_transactions: entry.data!.disputed_transactions };
     return { dispute, detailed: false, inList: true, sources: [...entry.sources] };
   });
+  // After a restart the registry is empty and PayPal's list names no seller transaction, so a
+  // listed case would not link to its sale. Read a few such cases by id (cached, bounded).
+  const nowMs = Date.now();
+  let fills = 0;
+  for (let i = 0; i < fromList.length && fills < MAX_DISPUTE_FILL_READS; i++) {
+    const v = fromList[i];
+    if (!v || hasSaleIds(v.dispute.disputed_transactions)) continue;
+    const entry = deps.disputes.get(v.dispute.dispute_id);
+    if (entry?.fillTriedAt !== undefined && nowMs - entry.fillTriedAt < DISPUTE_FILL_RETRY_MS) continue;
+    fills += 1;
+    if (entry) entry.fillTriedAt = nowMs;
+    try {
+      const d = await deps.reads.getDispute(paypal, v.dispute.dispute_id);
+      const noted = deps.disputes.note(v.dispute.dispute_id, "by_id", d, true);
+      const tx = noted.data?.disputed_transactions;
+      fromList[i] = { dispute: hasSaleIds(tx) ? { ...v.dispute, disputed_transactions: tx } : v.dispute, detailed: false, inList: true, sources: [...noted.sources] };
+    } catch {
+      // Left as listed; tried again after DISPUTE_FILL_RETRY_MS.
+    }
+  }
   const listed = new Set(list.map((d) => d.dispute_id));
   // Known from a webhook or by id, but not (yet) in PayPal's list.
   const missing = deps.disputes.all().filter((e) => !listed.has(e.id) && e.sources.some((s) => s !== "list"));
