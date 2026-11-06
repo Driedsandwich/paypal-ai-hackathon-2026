@@ -115,7 +115,7 @@ repository was created during that period. Dated log of the work (newest last):
 | 2026-11-01 | Pass 5 (after the hosted-demo checks): dispute evidence notes and replies sendable as is (seller to-dos listed separately, no claims of attachments that are not there); a refused evidence type offers a new OTHER proposal; the case is re-read after a dispute action; invoice notes with shipping state the total; a clear message when PayPal refuses Add Tracking for lack of permission. Pass 5b: tracking for invoice payments goes through Orders v2 `/track` on the order PayPal names for the payment (checked live on the hosted demo). |
 | 2026-11-01 | Pass 6 (after a restart of the free hosting instance): journeys rebuilt from PayPal keep their titles (English from the invoice item, Japanese from the invoice's private memo) and show tracking registered with PayPal (read from the Orders v2 order behind the invoice payment), with a few cached PayPal reads at most per page load. |
 | 2026-11-04 | Seal mark (owner's choice): the outline square next to the wordmark became a vermilion square stamp with a white 送 and a light stamped texture, so it no longer reads as a missing-glyph box or a checkbox; the same seal is the favicon. Screenshots in `docs/media/` retaken with `scripts/screenshots.mjs` (the `compare-*` images are kept as they were). |
-| 2026-11-06 | MCP server (`src/mcp/server.ts`, `npm run mcp`): lets other AI agents use Okuri's JSON API as tools over stdio; writes stay proposals, approve and reject tools only with `OKURI_MCP_ALLOW_APPROVE=1`; `test/mcp.test.ts`; the server side is unchanged. |
+| 2026-11-06 | MCP server (`src/mcp/server.ts`, `npm run mcp`): lets other AI agents use Okuri's JSON API as tools over stdio; writes stay proposals, approve and reject tools offered with `destructiveHint` so the client asks the person each time (`OKURI_MCP_ALLOW_APPROVE=0` removes them); `test/mcp.test.ts`; the server side is unchanged. |
 
 ## Setup
 
@@ -260,10 +260,10 @@ an evidence pack for one (`okuri_build_evidence_pack`), read the proposals
   create proposals; nothing reaches PayPal until a proposal is approved.
 - The approval gate is the same for people and agents: the stored payload runs exactly as shown,
   in the session that created it. An agent cannot change a payload when it approves.
-- `okuri_approve_proposal` and `okuri_reject_proposal` are **not offered by default**. Set
-  `OKURI_MCP_ALLOW_APPROVE=1` to add them. They are marked `destructiveHint: true`, so clients
-  that honor these hints can ask the person before each call. Without them the agent prepares and the seller approves in
-  the web UI.
+- `okuri_approve_proposal` and `okuri_reject_proposal` are offered so an agent can carry a sale
+  end to end, and they are marked `destructiveHint: true`: clients that honor MCP hints (Claude
+  Desktop, Claude Code) ask the person before each call. Set `OKURI_MCP_ALLOW_APPROVE=0` to
+  remove them; then the agent prepares and the seller approves in the web UI.
 - It is the PayPal sandbox (or the in-memory simulation): no real money moves.
 
 **Set up.** Build once, then point the client at `dist/mcp/server.js` (use your own absolute path):
@@ -296,7 +296,7 @@ claude mcp add okuri --env OKURI_URL=https://okuri.onrender.com -- node /path/to
 | --- | --- |
 | `OKURI_URL` | The Okuri to use. Default `https://okuri.onrender.com`. The free instance can take about a minute to wake up; calls wait up to 120 seconds. |
 | `OKURI_SESSION` | Optional. The value of the `okuri_sid` cookie of a browser session. Without it the server takes a new demo session from the site on the first call. |
-| `OKURI_MCP_ALLOW_APPROVE` | `1` adds the approve and reject tools. Default: not offered. |
+| `OKURI_MCP_ALLOW_APPROVE` | `0` removes the approve and reject tools. Default: offered (marked destructive). |
 
 **Work in the browser's session.** Each visitor has a private demo session, so an agent starting
 fresh sees its own seeded sales. To let the agent work on the same sales as the browser: open

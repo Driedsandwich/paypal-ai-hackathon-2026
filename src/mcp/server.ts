@@ -10,8 +10,9 @@ import { BuyerSchema, JpItemSchema, ListingForSaleSchema, ShipmentFactsSchema } 
 /**
  * Okuri as an MCP server (stdio). It only calls Okuri's own JSON API over HTTP: the same
  * routes, validation, limits and approval gate the web UI uses. Writes to PayPal are
- * proposals; nothing is sent until a proposal is approved, and the approve and reject tools
- * exist only when the operator opts in (OKURI_MCP_ALLOW_APPROVE=1).
+ * proposals; nothing is sent until a proposal is approved. The approve and reject tools are
+ * offered by default (marked destructive, so the client asks the person before each call) and
+ * can be removed with OKURI_MCP_ALLOW_APPROVE=0.
  */
 
 export const DEFAULT_OKURI_URL = "https://okuri.onrender.com";
@@ -265,11 +266,11 @@ async function main(): Promise<void> {
   const server = createOkuriMcpServer({
     baseUrl: process.env.OKURI_URL?.trim() || DEFAULT_OKURI_URL,
     ...(session ? { session } : {}),
-    allowApprove: process.env.OKURI_MCP_ALLOW_APPROVE === "1",
+    allowApprove: process.env.OKURI_MCP_ALLOW_APPROVE !== "0",
   });
   await server.connect(new StdioServerTransport());
   // stdout carries the protocol; anything for a human goes to stderr.
-  console.error(`okuri MCP server ready (${process.env.OKURI_URL?.trim() || DEFAULT_OKURI_URL}; approve tools ${process.env.OKURI_MCP_ALLOW_APPROVE === "1" ? "ON" : "off"})`);
+  console.error(`okuri MCP server ready (${process.env.OKURI_URL?.trim() || DEFAULT_OKURI_URL}; approve tools ${process.env.OKURI_MCP_ALLOW_APPROVE !== "0" ? "ON" : "off"})`);
 }
 
 function isEntryPoint(): boolean {

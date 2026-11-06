@@ -571,9 +571,11 @@ approve, PayPal sent the invoice).
     approve in the Approvals page. Tools: `okuri_health`, `okuri_list_journeys`,
     `okuri_draft_listing`, `okuri_prepare_invoice`, `okuri_add_tracking`, `okuri_list_proposals`,
     `okuri_list_disputes`, `okuri_build_evidence_pack` (8). `okuri_approve_proposal` and
-    `okuri_reject_proposal` exist only with `OKURI_MCP_ALLOW_APPROVE=1` (a construction-time
-    option), with `destructiveHint: true`, `openWorldHint: true`, so the default path to PayPal
-    is "the agent proposes, the seller approves". Read tools carry `readOnlyHint: true`; tools
+    `okuri_reject_proposal` are offered by default (owner's choice, 2026-11-06: an agent should be
+    able to carry a sale end to end) with `destructiveHint: true`, `openWorldHint: true`, so a
+    client that honors MCP hints asks the person before each approval; `OKURI_MCP_ALLOW_APPROVE=0`
+    removes them (a construction-time option) and leaves "the agent proposes, the seller approves
+    in the web UI". Read tools carry `readOnlyHint: true`; tools
     that create a proposal do not (they change the session's state, though not PayPal). Tool
     inputs reuse the schemas in `src/agent/schemas.ts`; `okuri_add_tracking` takes a flat shape
     (`kind` plus the ids) because an MCP input must be an object, and the server's own check
