@@ -562,3 +562,21 @@ approve, PayPal sent the invoice).
     (`favicon.svg`, with 32 px and 180 px PNG fallbacks). Replaces the outline square, which
     could be read as a missing-glyph box or a checkbox. Still `aria-hidden`; the link keeps its
     "Okuri home" label.
+83. **MCP server for other AI agents (2026-11-06).** `src/mcp/server.ts` (built to
+    `dist/mcp/server.js`, `npm run mcp`) is a stdio MCP server that only calls Okuri's existing
+    JSON API over HTTP (`OKURI_URL`, default the hosted demo); nothing in `src/http/`,
+    `src/server.ts` or `web/` changed, so limits, validation and the approval gate are the ones
+    people already use. It takes a demo session from `GET /` once (cookie `okuri_sid`), or uses
+    `OKURI_SESSION` so an agent can work in the seller's browser session and the seller can
+    approve in the Approvals page. Tools: `okuri_health`, `okuri_list_journeys`,
+    `okuri_draft_listing`, `okuri_prepare_invoice`, `okuri_add_tracking`, `okuri_list_proposals`,
+    `okuri_list_disputes`, `okuri_build_evidence_pack` (8). `okuri_approve_proposal` and
+    `okuri_reject_proposal` exist only with `OKURI_MCP_ALLOW_APPROVE=1` (a construction-time
+    option), with `destructiveHint: true`, `openWorldHint: true`, so the default path to PayPal
+    is "the agent proposes, the seller approves". Read tools carry `readOnlyHint: true`; tools
+    that create a proposal do not (they change the session's state, though not PayPal). Tool
+    inputs reuse the schemas in `src/agent/schemas.ts`; `okuri_add_tracking` takes a flat shape
+    (`kind` plus the ids) because an MCP input must be an object, and the server's own check
+    stays the one that decides. API errors come back as an error result with the API's
+    `error.code` and `message`. Decision: no new endpoint and no server-side MCP, because a
+    client of the public API keeps the gate in one place and works against any deployment.

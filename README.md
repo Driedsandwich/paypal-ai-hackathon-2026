@@ -115,6 +115,7 @@ repository was created during that period. Dated log of the work (newest last):
 | 2026-11-01 | Pass 5 (after the hosted-demo checks): dispute evidence notes and replies sendable as is (seller to-dos listed separately, no claims of attachments that are not there); a refused evidence type offers a new OTHER proposal; the case is re-read after a dispute action; invoice notes with shipping state the total; a clear message when PayPal refuses Add Tracking for lack of permission. Pass 5b: tracking for invoice payments goes through Orders v2 `/track` on the order PayPal names for the payment (checked live on the hosted demo). |
 | 2026-11-01 | Pass 6 (after a restart of the free hosting instance): journeys rebuilt from PayPal keep their titles (English from the invoice item, Japanese from the invoice's private memo) and show tracking registered with PayPal (read from the Orders v2 order behind the invoice payment), with a few cached PayPal reads at most per page load. |
 | 2026-11-04 | Seal mark (owner's choice): the outline square next to the wordmark became a vermilion square stamp with a white 送 and a light stamped texture, so it no longer reads as a missing-glyph box or a checkbox; the same seal is the favicon. Screenshots in `docs/media/` retaken with `scripts/screenshots.mjs` (the `compare-*` images are kept as they were). |
+| 2026-11-06 | MCP server (`src/mcp/server.ts`, `npm run mcp`): lets other AI agents use Okuri's JSON API as tools over stdio; writes stay proposals, approve and reject tools only with `OKURI_MCP_ALLOW_APPROVE=1`; `test/mcp.test.ts`; the server side is unchanged. |
 
 ## Setup
 
@@ -238,6 +239,72 @@ small DTOs with email addresses masked. Limits answer 429 (or 503 when busy) wit
 | `POST /api/offline/simulate` | Offline demo only: act as the buyer (`payment`, `dispute`) or the carrier (`delivery`) for one of your sales |
 | `POST /webhooks/paypal` | PayPal webhook receiver (signature verified via PayPal) |
 | `GET /paypal/return`, `GET /paypal/cancel` | Pages the buyer lands on after approving or cancelling a payment link |
+
+## Use Okuri from an AI agent (MCP)
+
+Okuri also speaks the [Model Context Protocol](https://modelcontextprotocol.io), so another AI
+(Claude Desktop, Claude Code, or any MCP client) can use it as a tool. The MCP server
+(`src/mcp/server.ts`, stdio) is a thin client of the JSON API above: it calls the hosted demo
+(or any Okuri you point it at) over HTTP and changes nothing on the server side. The same
+validation, limits and approval gate apply to an AI agent as to a person in the web UI.
+
+**What an agent can do.** Look at the seller's sales (`okuri_list_journeys`), draft an English
+listing from a Japanese item (`okuri_draft_listing`), prepare an invoice (`okuri_prepare_invoice`),
+prepare a tracking number (`okuri_add_tracking`), list disputes (`okuri_list_disputes`) and build
+an evidence pack for one (`okuri_build_evidence_pack`), read the proposals
+(`okuri_list_proposals`) and the server status (`okuri_health`).
+
+**Safety.**
+
+- Everything that would write to PayPal is a **proposal**. The prepare, add and build tools only
+  create proposals; nothing reaches PayPal until a proposal is approved.
+- The approval gate is the same for people and agents: the stored payload runs exactly as shown,
+  in the session that created it. An agent cannot change a payload when it approves.
+- `okuri_approve_proposal` and `okuri_reject_proposal` are **not offered by default**. Set
+  `OKURI_MCP_ALLOW_APPROVE=1` to add them. They are marked `destructiveHint: true`, so clients
+  that honor these hints can ask the person before each call. Without them the agent prepares and the seller approves in
+  the web UI.
+- It is the PayPal sandbox (or the in-memory simulation): no real money moves.
+
+**Set up.** Build once, then point the client at `dist/mcp/server.js` (use your own absolute path):
+
+```sh
+npm ci && npm run build
+```
+
+Claude Desktop (`claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "okuri": {
+      "command": "node",
+      "args": ["/path/to/paypal-ai-hackathon-2026/dist/mcp/server.js"],
+      "env": { "OKURI_URL": "https://okuri.onrender.com" }
+    }
+  }
+}
+```
+
+Claude Code:
+
+```sh
+claude mcp add okuri --env OKURI_URL=https://okuri.onrender.com -- node /path/to/paypal-ai-hackathon-2026/dist/mcp/server.js
+```
+
+| Variable | Meaning |
+| --- | --- |
+| `OKURI_URL` | The Okuri to use. Default `https://okuri.onrender.com`. The free instance can take about a minute to wake up; calls wait up to 120 seconds. |
+| `OKURI_SESSION` | Optional. The value of the `okuri_sid` cookie of a browser session. Without it the server takes a new demo session from the site on the first call. |
+| `OKURI_MCP_ALLOW_APPROVE` | `1` adds the approve and reject tools. Default: not offered. |
+
+**Work in the browser's session.** Each visitor has a private demo session, so an agent starting
+fresh sees its own seeded sales. To let the agent work on the same sales as the browser: open
+the demo, open the browser's developer tools, copy the value of the `okuri_sid` cookie
+(Application or Storage tab, Cookies) into `OKURI_SESSION`, and restart the client. The
+proposals the agent makes then appear in the browser's **Approvals** page, where the seller
+reviews and approves them. Treat the value like a password for that session; it can approve
+that session's proposals (sandbox only).
 
 ## Test
 
@@ -414,6 +481,7 @@ during the submission period). Dependencies added in this build are pinned to ex
 | `@ai-sdk/google` 3.0.140 | Apache-2.0 | Google provider for the AI SDK |
 | `@ai-sdk/openai` 3.0.135 | Apache-2.0 | OpenAI provider for the AI SDK |
 | `zod` 4.6.7 | MIT | Input and AI-output validation, tool schemas |
+| `@modelcontextprotocol/sdk` 1.32.2 | MIT | MCP server (stdio) so other AI agents can use Okuri as a tool |
 | `react` 19.3.1, `react-dom` 19.3.1 | MIT | Web UI |
 | `vite` 8.3.5 (dev) | MIT | Builds the web UI (pulls in `lightningcss`, MPL-2.0, at build time only) |
 | `@vitejs/plugin-react` 6.1.2 (dev) | MIT | React support for Vite |

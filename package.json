@@ -11,6 +11,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json && vite build --config web/vite.config.ts",
     "start": "node dist/server.js",
+    "mcp": "node dist/mcp/server.js",
     "dev:web": "vite --config web/vite.config.ts",
     "typecheck": "tsc --noEmit && tsc -p web/tsconfig.json --noEmit",
     "test": "vitest run",
@@ -31,6 +32,7 @@
     "@ai-sdk/openai": "3.0.135",
     "@fontsource/noto-sans-jp": "5.3.1",
     "@fontsource/noto-serif-jp": "5.3.1",
+    "@modelcontextprotocol/sdk": "1.32.2",
     "ag-studio": "3.0.0",
     "ag-studio-react": "3.0.0",
     "ai": "6.0.320",
